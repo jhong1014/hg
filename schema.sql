@@ -24,6 +24,9 @@ create table if not exists hg_suppliers (            -- 거래처
   bank_name        text,
   account_no       text,
   contact          text,                             -- 담당자·연락처
+  report_section   smallint,                         -- 업체별 보고서 구분: 1 원료·첨가제, 2 포장지, 3 운송비
+  report_order     int,                              -- 업체별 보고서 행 순서
+  rep_item         text,                             -- 업체별 보고서 '대표 품명'
   is_active        boolean not null default true,
   created_at       timestamptz not null default now()
 );
@@ -115,12 +118,21 @@ create table if not exists hg_settlements (          -- 월 지급 (전표NO, �
   supplier_id bigint not null references hg_suppliers(id),
   voucher_no  text,
   due_date    date,                                  -- 비어 있으면 결제조건으로 계산
+  amount      numeric(14,0),                         -- 입고 내역이 없는 항목(운송비)의 직접 입력 금액
   primary key (yyyymm, supplier_id)
+);
+
+create table if not exists hg_report_items (         -- 품목별 보고서 양식 (행 순서·품명·거래처 표기)
+  id           bigserial primary key,
+  sort_order   int not null,
+  sap_code     text not null,
+  label        text not null,
+  vendor_label text
 );
 
 do $$ declare t text; begin
   foreach t in array array['hg_settings','hg_sessions','hg_suppliers','hg_materials','hg_supplier_items',
-    'hg_import_batches','hg_price_history','hg_import_lots','hg_receipts','hg_settlements'] loop
+    'hg_import_batches','hg_price_history','hg_import_lots','hg_receipts','hg_settlements','hg_report_items'] loop
     execute format('alter table %I enable row level security', t);
     execute format('revoke all on %I from anon, authenticated', t);
   end loop;
@@ -199,7 +211,7 @@ begin
   select json_build_object(
     'is_default', (select crypt('1234', value) = value from hg_settings where key = 'pin_hash'),
     'vendors', (select coalesce(json_agg(json_build_object('code', code, 'name', name, 'off', pay_month_offset, 'day', pay_day,
-                  'bank', bank_name, 'acct', account_no, 'contact', contact) order by name), '[]') from hg_suppliers where is_active),
+                  'bank', bank_name, 'acct', account_no, 'contact', contact, 'sec', report_section, 'ord', report_order, 'rep', rep_item) order by name), '[]') from hg_suppliers where is_active),
     'items', (select coalesce(json_agg(json_build_object('id', si.id, 'sap', m.sap_code, 'name', m.name, 'raw', si.raw_name, 'grp', m.group_name,
                   'cat', si.category, 'tax', si.tax_code, 'shelf', m.shelf_life, 'v', s.code,
                   'hist', (select coalesce(json_agg(json_build_array(ph.valid_from, ph.unit_price) order by ph.valid_from), '[]')
@@ -227,8 +239,9 @@ begin
     'batches', (select coalesce(json_agg(json_build_object('id', id, 'type', target, 'src', file_name, 'at', created_at,
                   'n', ok_rows, 'skip', skipped_rows) order by id desc), '[]')
                 from (select * from hg_import_batches where reverted_at is null order by id desc limit 20) b),
-    'settle', (select coalesce(json_agg(json_build_object('ym', st.yyyymm, 'v', s.code, 'voucher', st.voucher_no, 'due', st.due_date)), '[]')
-               from hg_settlements st join hg_suppliers s on s.id = st.supplier_id)
+    'settle', (select coalesce(json_agg(json_build_object('ym', st.yyyymm, 'v', s.code, 'voucher', st.voucher_no, 'due', st.due_date, 'amount', st.amount)), '[]')
+               from hg_settlements st join hg_suppliers s on s.id = st.supplier_id),
+    'ritems', (select coalesce(json_agg(json_build_object('sap', sap_code, 'label', label, 'vlabel', vendor_label) order by sort_order, id), '[]') from hg_report_items)
   ) into v;
   return v;
 end $$;
@@ -368,21 +381,38 @@ language plpgsql security definer set search_path = public as $$
 begin
   perform hg_auth(p_token);
   if coalesce(trim(p_code),'') = '' or coalesce(trim(p_data->>'name'),'') = '' then raise exception '거래처코드와 거래처명이 필요합니다'; end if;
-  insert into hg_suppliers(code, name, pay_month_offset, pay_day, bank_name, account_no, contact)
+  insert into hg_suppliers(code, name, pay_month_offset, pay_day, bank_name, account_no, contact, report_section, report_order, rep_item)
   values (trim(p_code), trim(p_data->>'name'), nullif(p_data->>'off','')::smallint, nullif(p_data->>'day','')::smallint,
-          nullif(p_data->>'bank',''), nullif(p_data->>'acct',''), nullif(p_data->>'contact',''))
+          nullif(p_data->>'bank',''), nullif(p_data->>'acct',''), nullif(p_data->>'contact',''),
+          nullif(p_data->>'sec','')::smallint, nullif(p_data->>'ord','')::int, nullif(p_data->>'rep',''))
   on conflict (code) do update set name = excluded.name, pay_month_offset = excluded.pay_month_offset, pay_day = excluded.pay_day,
-          bank_name = excluded.bank_name, account_no = excluded.account_no, contact = excluded.contact;
+          bank_name = excluded.bank_name, account_no = excluded.account_no, contact = excluded.contact,
+          report_section = excluded.report_section, report_order = excluded.report_order, rep_item = excluded.rep_item;
 end $$;
 
-create or replace function hg_set_settlement(p_token uuid, p_ym text, p_code text, p_voucher text, p_due date) returns void
+create or replace function hg_set_settlement(p_token uuid, p_ym text, p_code text, p_voucher text, p_due date, p_amount numeric default null) returns void
 language plpgsql security definer set search_path = public as $$
 declare v_sup bigint;
 begin
   perform hg_auth(p_token);
   select id into strict v_sup from hg_suppliers where code = p_code;
-  insert into hg_settlements(yyyymm, supplier_id, voucher_no, due_date) values (p_ym, v_sup, nullif(p_voucher,''), p_due)
-  on conflict (yyyymm, supplier_id) do update set voucher_no = excluded.voucher_no, due_date = excluded.due_date;
+  insert into hg_settlements(yyyymm, supplier_id, voucher_no, due_date, amount) values (p_ym, v_sup, nullif(p_voucher,''), p_due, p_amount)
+  on conflict (yyyymm, supplier_id) do update set voucher_no = excluded.voucher_no, due_date = excluded.due_date, amount = excluded.amount;
+end $$;
+
+-- 품목별 보고서 양식 전체 교체. p_rows: [{sap, label, vlabel}] (배열 순서 = 보고서 순서)
+create or replace function hg_save_report_items(p_token uuid, p_rows jsonb) returns int
+language plpgsql security definer set search_path = public as $$
+declare v_n int;
+begin
+  perform hg_auth(p_token);
+  delete from hg_report_items where true;
+  insert into hg_report_items(sort_order, sap_code, label, vendor_label)
+  select ord::int, trim(r->>'sap'), trim(r->>'label'), nullif(trim(r->>'vlabel'),'')
+  from jsonb_array_elements(p_rows) with ordinality as t(r, ord)
+  where coalesce(trim(r->>'sap'),'') <> '' and coalesce(trim(r->>'label'),'') <> '';
+  get diagnostics v_n = row_count;
+  return v_n;
 end $$;
 
 -- 화면(anon 키)에서 부를 수 있는 함수만 열어 둠. hg_auth 는 내부용.
@@ -390,4 +420,5 @@ revoke all on function hg_auth(uuid) from public, anon, authenticated;
 grant execute on function hg_login(text), hg_logout(uuid), hg_change_pin(uuid, text, text), hg_load(uuid),
   hg_add_receipts(uuid, jsonb, jsonb), hg_void_receipt(uuid, bigint), hg_revert_batch(uuid, bigint),
   hg_add_lot(uuid, text, text, text, text, text), hg_upsert_master(uuid, jsonb, jsonb),
-  hg_save_supplier(uuid, text, jsonb), hg_set_settlement(uuid, text, text, text, date) to anon, authenticated;
+  hg_save_supplier(uuid, text, jsonb), hg_set_settlement(uuid, text, text, text, date, numeric),
+  hg_save_report_items(uuid, jsonb) to anon, authenticated;
