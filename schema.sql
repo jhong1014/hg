@@ -288,6 +288,34 @@ begin
   return json_build_object('ok', true, 'n', v_n, 'batch', v_batch);
 end $$;
 
+-- 입고 내역 수정. p_data: {date, item_id(같은 거래처 안에서 원료 변경), qty, gross, tbcnt, tare, price, po, inpo}
+create or replace function hg_update_receipt(p_token uuid, p_id bigint, p_data jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_old hg_receipts; v_item bigint; v_cat text; v_tax text; v_qty numeric; v_price numeric; v_supply numeric; v_tare numeric; v_cnt int;
+begin
+  perform hg_auth(p_token);
+  select * into v_old from hg_receipts where id = p_id and voided_at is null;
+  if not found then raise exception '수정할 입고 내역을 찾을 수 없습니다'; end if;
+  v_item := v_old.supplier_item_id; v_cat := v_old.category; v_tax := v_old.tax_code;
+  if v_old.supplier_item_id is not null and nullif(p_data->>'item_id','') is not null
+     and (p_data->>'item_id')::bigint <> v_old.supplier_item_id then
+    select id, category, tax_code into strict v_item, v_cat, v_tax from hg_supplier_items where id = (p_data->>'item_id')::bigint;
+  end if;
+  v_qty := nullif(p_data->>'qty','')::numeric;
+  if v_qty is null or v_qty <= 0 then raise exception '수량은 0보다 커야 합니다'; end if;
+  if nullif(p_data->>'date','') is null then raise exception '날짜가 필요합니다'; end if;
+  v_price := nullif(p_data->>'price','')::numeric;
+  v_tare := nullif(p_data->>'tare','')::numeric; v_cnt := nullif(p_data->>'tbcnt','')::int;
+  v_supply := case when v_price is null then null else round(v_qty * v_price) end;
+  update hg_receipts set receipt_date = (p_data->>'date')::date, supplier_item_id = v_item, category = v_cat, tax_code = v_tax,
+    gross_kg = nullif(p_data->>'gross','')::numeric,
+    packaging = case when v_cnt is not null or coalesce(v_tare, 0) > 0 then 'T/B' end, tb_count = v_cnt, tare_kg = v_tare,
+    net_kg = v_qty, unit_price = v_price, supply_amount = v_supply,
+    vat_amount = case when v_supply is null then null when v_tax = 'V1' then round(v_supply * 0.1) else 0 end,
+    purchase_order_no = nullif(p_data->>'po',''), inbound_po_no = nullif(p_data->>'inpo','')
+  where id = p_id;
+end $$;
+
 create or replace function hg_void_receipt(p_token uuid, p_id bigint) returns void
 language plpgsql security definer set search_path = public as $$
 begin
@@ -418,7 +446,7 @@ end $$;
 -- 화면(anon 키)에서 부를 수 있는 함수만 열어 둠. hg_auth 는 내부용.
 revoke all on function hg_auth(uuid) from public, anon, authenticated;
 grant execute on function hg_login(text), hg_logout(uuid), hg_change_pin(uuid, text, text), hg_load(uuid),
-  hg_add_receipts(uuid, jsonb, jsonb), hg_void_receipt(uuid, bigint), hg_revert_batch(uuid, bigint),
+  hg_add_receipts(uuid, jsonb, jsonb), hg_update_receipt(uuid, bigint, jsonb), hg_void_receipt(uuid, bigint), hg_revert_batch(uuid, bigint),
   hg_add_lot(uuid, text, text, text, text, text), hg_upsert_master(uuid, jsonb, jsonb),
   hg_save_supplier(uuid, text, jsonb), hg_set_settlement(uuid, text, text, text, date, numeric),
   hg_save_report_items(uuid, jsonb) to anon, authenticated;

@@ -178,7 +178,7 @@ function applyData(j){
   if(!S.month||!getMonths().includes(S.month)||!S.loaded){const ms=[...new Set(TX.map(t=>ym(t.date)))].sort();S.month=ms.length?ms[ms.length-1]:ym(td);S.loaded=true}
   if(!V[S.vendor])S.vendor=(D.vendors[0]||{}).code||'';
 }
-const S={page:'dash',month:'',regTab:'gen',vendor:'',item:null,q:'',cat:'',mTab:'item',mSel:0,bTab:'rc',lot:null,loaded:false};
+const S={onlyItem:false,onlyVendor:false,page:'dash',month:'',regTab:'gen',vendor:'',item:null,q:'',cat:'',mTab:'item',mSel:0,bTab:'rc',lot:null,loaded:false};
 const monthName=m=>'20'+m.slice(0,2)+'년 '+(+m.slice(2))+'월';
 const PAGES=[['','업무'],['dash','대시보드'],['reg','입고 등록'],['list','입고 내역'],['bulk','일괄 입력'],
  ['','월 마감 보고'],['vendor','업체별 구매현황'],['item','품목별 전월비'],
@@ -226,7 +226,7 @@ async function changePin(){const o=$('#p_old').value,n=$('#p_new').value,n2=$('#
 
 /* ---------- 모달 ---------- */
 function modal(title,fields,onOk,okLabel='저장'){const m=$('#modal');
-  m.innerHTML=`<div class="card mbox"><h2>${esc(title)}</h2><form class="pad" id="m_form"><div class="f">${fields.map(f=>`${f.type==='textarea'?'':`<label>${f.label}</label>`}${f.type==='textarea'?`<textarea id="m_${f.key}" style="grid-column:1/-1;min-height:320px;white-space:pre" placeholder="${esc(f.ph||'')}">${esc(f.value??'')}</textarea>`:f.type==='select'?`<select id="m_${f.key}">${f.options.map(o=>`<option value="${esc(o[0])}" ${String(o[0])===String(f.value??'')?'selected':''}>${esc(o[1])}</option>`).join('')}</select>`:`<input id="m_${f.key}" type="${f.type||'text'}" value="${esc(f.value??'')}" placeholder="${esc(f.ph||'')}" ${f.ro?'disabled':''}>`}`).join('')}</div>
+  m.innerHTML=`<div class="card mbox"><h2>${esc(title)}</h2><form class="pad" id="m_form"><div class="f">${fields.map(f=>`${f.type==='textarea'?'':`<label>${f.label}</label>`}${f.type==='textarea'?`<textarea id="m_${f.key}" style="grid-column:1/-1;min-height:320px;white-space:pre" placeholder="${esc(f.ph||'')}">${esc(f.value??'')}</textarea>`:f.type==='select'?`<select id="m_${f.key}">${f.options.map(o=>`<option value="${esc(o[0])}" ${String(o[0])===String(f.value??'')?'selected':''}>${esc(o[1])}</option>`).join('')}</select>`:`<input id="m_${f.key}" type="${f.type||'text'}" ${f.type==='number'?'step="any"':''} value="${esc(f.value??'')}" placeholder="${esc(f.ph||'')}" ${f.ro?'disabled':''}>`}`).join('')}</div>
    <div class="mact"><button type="button" class="btn" onclick="closeModal()">취소</button><button class="btn pri">${okLabel}</button></div></form></div>`;
   m.classList.add('on');$('#m_form').onsubmit=e=>{e.preventDefault();const v={};fields.forEach(f=>v[f.key]=$('#m_'+f.key).value.trim());onOk(v)};
   const first=m.querySelector('input:not([disabled]),select');if(first)first.focus()}
@@ -324,24 +324,38 @@ function list(){
   return head('입고 내역',`${monthName(S.month)} · ${fmt(rows.length)}건`+(rows.length>300?' (최근 300건 표시, 전체는 엑셀 내보내기)':''),
    monthSel()+`<select onchange="set('cat',this.value)"><option value="">구분 전체</option>${cats.map(c=>`<option ${c===S.cat?'selected':''}>${c}</option>`).join('')}</select><input type="search" placeholder="원료·거래처·PO 검색" value="${esc(S.q)}" onchange="set('q',this.value)"><button class="btn" onclick="S.bTab='rc';go('bulk')">엑셀 일괄 입력</button><button class="btn" onclick="exportList()">엑셀 내보내기</button>`)+
   `<div class="card"><div class="scroll" style="max-height:640px"><table><thead><tr><th>날짜</th><th>주차</th><th>구분</th><th>SAP</th><th>원료명</th><th>거래처</th><th>과세</th><th class="n">수량(kg)</th><th class="n">단가</th><th class="n">공급가액</th><th class="n">부가세</th><th class="n">총금액</th><th>구매오더</th><th>입고PO</th><th>T/B</th><th class="n">계근표</th><th></th></tr></thead><tbody>
-  ${show.map(t=>`<tr><td>${t.date}</td><td class="mut">${weekLabel(t.date)}</td><td><span class="tag ${t.cat==='주원료'?'g':t.cat==='부원료'?'o':''}">${t.cat}</span></td><td>${esc(t.sap)}</td><td>${esc(t.raw)}</td><td>${esc(t.vname||'-')}</td><td>${t.tax}</td><td class="n">${fmt(t.qty)}</td><td class="n">${fmt(t.price)}</td><td class="n">${t.price?fmt(supply(t)):'-'}</td><td class="n">${t.price?fmt(vat(t)):'-'}</td><td class="n">${t.price?fmt(total(t)):'-'}</td><td>${esc(t.po)}</td><td>${esc(t.inpo)}</td><td>${t.tb?`${t.tbcnt??''}개 / −${t.tare??''}kg`:''}</td><td class="n">${t.gross?fmt(t.gross):''}</td><td><button class="btn sm" onclick="delTx(${t.id})">삭제</button></td></tr>`).join('')||'<tr><td colspan="17" class="mut">내역이 없습니다</td></tr>'}
+  ${show.map(t=>`<tr><td>${t.date}</td><td class="mut">${weekLabel(t.date)}</td><td><span class="tag ${t.cat==='주원료'?'g':t.cat==='부원료'?'o':''}">${t.cat}</span></td><td>${esc(t.sap)}</td><td>${esc(t.raw)}</td><td>${esc(t.vname||'-')}</td><td>${t.tax}</td><td class="n">${fmt(t.qty)}</td><td class="n">${fmt(t.price)}</td><td class="n">${t.price?fmt(supply(t)):'-'}</td><td class="n">${t.price?fmt(vat(t)):'-'}</td><td class="n">${t.price?fmt(total(t)):'-'}</td><td>${esc(t.po)}</td><td>${esc(t.inpo)}</td><td>${t.tb?`${t.tbcnt??''}개 / −${t.tare??''}kg`:''}</td><td class="n">${t.gross?fmt(t.gross):''}</td><td><button class="btn sm" onclick="editTx(${t.id})">수정</button> <button class="btn sm" onclick="delTx(${t.id})">삭제</button></td></tr>`).join('')||'<tr><td colspan="17" class="mut">내역이 없습니다</td></tr>'}
   </tbody><tfoot><tr><td colspan="7">합계 (${fmt(rows.length)}건)</td><td class="n">${fmt(sumBy(rows,t=>t.qty))}</td><td></td><td class="n">${fmt(sumBy(rows,supply))}</td><td class="n">${fmt(sumBy(rows,vat))}</td><td class="n">${fmt(sumBy(rows,total))}</td><td colspan="5"></td></tr></tfoot></table></div></div>`;
 }
 function delTx(id){const t=TX.find(x=>x.id===id);if(!t||!confirm(`${t.date} ${t.raw} ${fmt(t.qty)}kg 내역을 삭제할까요?`))return;act(()=>api('hg_void_receipt',{p_id:id}),'삭제했습니다')}
+function editTx(id){const t=TX.find(x=>x.id===id);if(!t)return;
+  const its=t.v?D.items.filter(i=>i.v===t.v):[],cur=its.find(i=>i.raw===t.raw&&i.sap===t.sap)||its.find(i=>i.raw===t.raw);
+  const itemField=t.v?(cur?[{key:'item_id',label:'원료명',type:'select',value:cur.id,options:its.map(i=>[i.id,i.raw+(i.sap?' ('+i.sap+')':'')])}]:[{key:'raw',label:'원료명',value:t.raw,ro:true}]):[{key:'raw',label:'원료명(모선)',value:t.raw,ro:true}];
+  modal('입고 내역 수정'+(t.vname?' — '+t.vname:''),[{key:'date',label:'날짜',type:'date',value:t.date},...itemField,
+    {key:'qty',label:'수량 (kg)',type:'number',value:t.qty},{key:'gross',label:'계근표 (kg)',type:'number',value:t.gross??''},
+    {key:'tbcnt',label:'T/B 수량',type:'number',value:t.tbcnt??''},{key:'tare',label:'T/B 무게 (kg)',type:'number',value:t.tare??''},
+    {key:'price',label:'단가 (원/kg)',type:'number',value:t.price??'',ph:t.v?'':'주원료는 비워 둠'},
+    {key:'po',label:'구매오더',value:t.po},{key:'inpo',label:'입고PO',value:t.inpo}],
+   v=>{if(!v.date||!(+v.qty>0)){toast('날짜와 수량을 확인하세요');return}
+     if(['qty','gross','tbcnt','tare','price'].some(k=>v[k]!==''&&isNaN(+v[k]))){toast('숫자 칸을 확인하세요');return}
+     if(v.gross!==''&&Math.abs(+v.gross-(+v.tare||0)-+v.qty)>0.5&&!confirm(`수량(${fmt(+v.qty)})이 계근표−T/B무게(${fmt(+v.gross-(+v.tare||0))})와 다릅니다. 그대로 저장할까요?`))return;
+     if(cur&&String(v.item_id)!==String(cur.id)&&v.price!==''){const ni=its.find(i=>String(i.id)===String(v.item_id)),np=ni?priceAt(ni,v.date):null;
+       if(np!=null&&np!==+v.price&&confirm(`원료를 바꿨습니다. 단가를 ${ni.raw}의 ${fmt(np)}원으로 바꿀까요?\n(취소를 누르면 입력한 ${fmt(+v.price)}원을 유지합니다)`))v.price=String(np)}
+     act(async()=>{await api('hg_update_receipt',{p_id:id,p_data:v});closeModal()},'수정했습니다')})}
 function exportList(){const rows=listRows();if(!rows.length){toast('내보낼 내역이 없습니다');return}
   saveSheet('입고내역_'+S.month,[['날짜','주차','구분','SAP','품목','원료명','면/과세','수량','단가','거래처코드','거래처명','구매오더','입고PO','공급가액','부가세','총금액','T/B','T/B수량','T/B무게','계근표'],
    ...rows.map(t=>[t.date,weekLabel(t.date),t.cat,t.sap,t.name,t.raw,t.tax,t.qty,t.price??'',t.v,t.vname,t.po,t.inpo,t.price?supply(t):'',t.price?vat(t):'',t.price?total(t):'',t.tb,t.tbcnt??'',t.tare??'',t.gross??''])])}
 
 /* ---------- 업체별 (원본 엑셀 「업체별」 시트 양식) ---------- */
 const mmOf=m=>m.slice(2)+'월';
-function vendorReport(m){
+function vendorReport(m,only){
   const g={};priced(m).forEach(t=>{g[t.v]=g[t.v]||{amt:0,items:{}};g[t.v].amt+=total(t);g[t.v].items[t.name]=(g[t.v].items[t.name]||0)+total(t)});
   const secOf=v=>{if(v.sec)return v.sec;const cs=D.items.filter(i=>i.v===v.code).map(i=>i.cat);return cs.length&&cs.every(c=>c==='포장재')?2:cs.length&&cs.every(c=>c==='운반비')?3:1};
   const rows=D.vendors.filter(v=>v.ord!=null||g[v.code]).map(v=>{const x=g[v.code],s=SETTLE[m+'|'+v.code]||{};const its=x?Object.entries(x.items).sort((a,b)=>b[1]-a[1]):[];
     const calc=x?x.amt:0,manual=!calc&&secOf(v)===3&&s.amount!=null;
     return {code:v.code,name:v.name,sec:secOf(v),ord:v.ord??1e9,extra:v.ord==null,rep:v.rep||(its.length?its[0][0]+(its.length>1?' 외':''):''),
       calc,amt:manual?+s.amount:calc,manual,due:dueOf(v.code,m),bank:v.bank||'',acct:v.acct||'',voucher:s.voucher||'',term:termLabel(v).replace(' ','')}})
-   .sort((a,b)=>a.sec-b.sec||a.ord-b.ord||b.amt-a.amt);
+   .sort((a,b)=>a.sec-b.sec||a.ord-b.ord||b.amt-a.amt).filter(r=>!only||r.amt);
   const dm={};rows.forEach(r=>{if(r.amt||r.ord<1e9){const d=r.due||'미지정';dm[d]=dm[d]||{a:0,l:r.term};dm[d].a+=r.amt}});
   const ss=s=>sumBy(rows.filter(r=>r.sec===s),r=>r.amt);
   return {rows,tot:sumBy(rows,r=>r.amt),dues:Object.keys(dm).sort().map(d=>({d,a:dm[d].a,l:dm[d].l})),right:[['물품대',ss(1)],['부대비',ss(3)],['포장재',ss(2)]]};
@@ -349,7 +363,7 @@ function vendorReport(m){
 const SEC_LABEL={2:'2. 포장지',3:'3. 운송비'};
 const mdK=d=>d&&/^\d{4}-\d{2}-\d{2}$/.test(d)?d.slice(5,7)+'월 '+d.slice(8)+'일':(d||'');
 function vendor(){
-  const R=vendorReport(S.month);let body='',sec=1;
+  const R=vendorReport(S.month,S.onlyVendor);let body='',sec=1;
   R.rows.forEach(r=>{if(r.sec!==sec){sec=r.sec;body+=`<tr><td colspan="8" style="text-align:center;font-weight:700;background:#fafbf9">${SEC_LABEL[sec]||''}</td></tr>`}
     body+=`<tr><td>${esc(r.code)}</td><td>${esc(r.name)}${r.extra?' <span class="tag w" title="원본 양식에 없던 거래처입니다. 거래처 수정에서 보고서 순서를 지정할 수 있습니다">양식 외</span>':''}</td><td>${esc(r.rep)}</td>
      <td class="n">${r.calc||r.sec!==3?(r.amt?fmt(r.amt):'-'):`<input type="number" style="width:120px;padding:3px 6px;text-align:right" placeholder="-" value="${r.manual?r.amt:''}" onchange="saveSettle('${esc(r.code)}',{amount:this.value===''?null:+this.value})">`}</td>
@@ -358,7 +372,7 @@ function vendor(){
   const n=Math.max(R.dues.length,3);let sum='';
   for(let i=-1;i<n;i++){const d=i<0?null:R.dues[i],rt=i<0?['합계',R.tot]:R.right[i];
     sum+=`<tr><td style="text-align:center"><b>${i<0?'합계':d?mdK(d.d):''}</b></td><td class="n"><b>${i<0?fmt(R.tot):d?fmt(d.a):''}</b></td><td class="mut">${i<0?'합계금액':d?d.l:''}</td><td style="text-align:center"><b>${rt?rt[0]:''}</b></td><td class="n"><b>${rt?fmt(rt[1]):''}</b></td></tr>`}
-  return head(`${mmOf(S.month)} 원료 구매현황`,'원본 엑셀 「업체별」 시트와 같은 순서·양식입니다. 금액은 입고 내역에서 자동 집계되고, 「3. 운송비」처럼 입고 내역이 없는 항목은 금액을 직접 적습니다.',monthSel()+`<button class="btn pri" onclick="exportReports()">엑셀 다운로드</button><button class="btn" onclick="window.print()">인쇄</button>`)+
+  return head(`${mmOf(S.month)} 원료 구매현황`,'원본 엑셀 「업체별」 시트와 같은 순서·양식입니다. 금액은 입고 내역에서 자동 집계되고, 「3. 운송비」처럼 입고 내역이 없는 항목은 금액을 직접 적습니다.',monthSel()+`<label style="display:flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap"><input type="checkbox" ${S.onlyVendor?'checked':''} onchange="set('onlyVendor',this.checked)">당월 금액이 있는 업체만</label><button class="btn pri" onclick="exportReports()">엑셀 다운로드</button><button class="btn" onclick="window.print()">인쇄</button>`)+
   `<div class="card"><div class="scroll" style="max-height:none"><table class="rep"><thead><tr><th>업체코드</th><th>거래처명</th><th>대표 품명</th><th class="n">금액</th><th>일자</th><th>은행</th><th>계좌번호</th><th>전표NO</th></tr></thead><tbody>${body||'<tr><td colspan="8" class="mut">표시할 거래처가 없습니다</td></tr>'}</tbody></table></div></div>
   <div class="card" style="margin-top:14px;max-width:760px;margin-left:auto"><table class="rep"><tbody>${sum}</tbody></table></div>`;
 }
@@ -366,7 +380,7 @@ function saveSettle(code,patch){const s={...(SETTLE[S.month+'|'+code]||{}),...pa
   act(()=>api('hg_set_settlement',{p_ym:S.month,p_code:code,p_voucher:s.voucher||'',p_due:s.due||null,p_amount:s.amount==null||s.amount===''?null:+s.amount}),'저장했습니다')}
 
 /* ---------- 품목별 (원본 엑셀 「품목별」 시트 양식) ---------- */
-function itemReport(m){
+function itemReport(m,only){
   const agg=x=>{const g={};priced(x).forEach(t=>{const k=t.sap||t.name;const o=g[k]=g[k]||{name:t.name,q:0,a:0,ps:[],vs:[]};o.q+=t.qty;o.a+=total(t);o.ps.push(t.price);if(!o.vs.includes(t.vname))o.vs.push(t.vname)});return g};
   const c=agg(m),p=agg(prevYm(m)),avg=a=>a&&a.ps.length?a.ps.reduce((s,x)=>s+x,0)/a.ps.length:null;
   const mk=(sap,label,vlabel,extra)=>{const C=c[sap],P=p[sap],r={sap,label,vlabel,extra,pq:P?P.q:0,pp:avg(P),pa:P?P.a:0,cq:C?C.q:0,cp:avg(C),ca:C?C.a:0};
@@ -375,15 +389,17 @@ function itemReport(m){
   [...new Set([...Object.keys(c),...Object.keys(p)])].filter(k=>!used.has(k)).sort().forEach(k=>{const x=c[k]||p[k];rows.push(mk(k,x.name,x.vs[0]+(x.vs.length>1?' 외':''),true))});
   const T={pq:sumBy(rows,r=>r.pq),pa:sumBy(rows,r=>r.pa),cq:sumBy(rows,r=>r.cq),ca:sumBy(rows,r=>r.ca)};
   T.dq=T.cq-T.pq;T.dqp=T.pq?T.dq/T.pq:null;T.da=T.ca-T.pa;T.dap=T.pa?T.da/T.pa:null;
-  return {rows,T};
+  const shown=only?rows.filter(r=>r.cq||r.ca):rows;
+  return {rows:shown,T,hidden:rows.length-shown.length,hiddenPrev:only?sumBy(rows.filter(r=>!(r.cq||r.ca)),r=>r.pa):0};
 }
 function item(){
-  const R=itemReport(S.month),pm=prevYm(S.month);
+  const R=itemReport(S.month,S.onlyItem),pm=prevYm(S.month);
   const sg=v=>v==null?'<td class="n mut"></td>':`<td class="n ${v>0?'up':v<0?'down':''}">${fmt(v)}</td>`;
   const pc=(v,d=0)=>v==null?'<td class="n mut"></td>':`<td class="n ${v>0?'up':v<0?'down':''}">${(v*100).toFixed(d)}%</td>`;
   const z=v=>v?fmt(v):'-';
   const st='style="top:33px"';
-  return head(`${mmOf(S.month)} 품목별 원료 구매내역`,'원본 엑셀 「품목별」 시트와 같은 순서·양식입니다. 양식에 없는 품목이 입고되면 맨 아래에 「양식 외」로 붙습니다.',monthSel()+`<button class="btn" onclick="editReportItems()">양식 품목 편집</button><button class="btn pri" onclick="exportReports()">엑셀 다운로드</button><button class="btn" onclick="window.print()">인쇄</button>`)+
+  return head(`${mmOf(S.month)} 품목별 원료 구매내역`,'원본 엑셀 「품목별」 시트와 같은 순서·양식입니다. 양식에 없는 품목이 입고되면 맨 아래에 「양식 외」로 붙습니다.',monthSel()+`<label style="display:flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap"><input type="checkbox" ${S.onlyItem?'checked':''} onchange="set('onlyItem',this.checked)">당월 데이터가 있는 원료만</label><button class="btn" onclick="editReportItems()">양식 품목 편집</button><button class="btn pri" onclick="exportReports()">엑셀 다운로드</button><button class="btn" onclick="window.print()">인쇄</button>`)+
+  (R.hidden?`<div class="note">당월 입고가 없는 원료 ${R.hidden}개를 숨겼습니다.${R.hiddenPrev?` 숨긴 원료의 전월 금액 ${fmt(R.hiddenPrev)}원은 소계의 전월·증감에 그대로 포함됩니다.`:''} 엑셀 다운로드에도 같은 조건이 적용됩니다.</div>`:'')+
   `<div class="card"><div class="scroll" style="max-height:none"><table class="rep"><thead><tr><th rowspan="2">품명</th><th rowspan="2">원료 코드</th><th rowspan="2">거래처</th><th colspan="3" style="text-align:center">전월 ${mmOf(pm)}</th><th colspan="3" style="text-align:center;background:#404040;color:#fff">당월 ${mmOf(S.month)}</th><th colspan="6" style="text-align:center">전월비 증감</th></tr>
   <tr><th class="n" ${st}>수량</th><th class="n" ${st}>단가</th><th class="n" ${st}>금액</th><th class="n" ${st}>수량</th><th class="n" ${st}>단가</th><th class="n" ${st}>금액</th><th class="n" colspan="2" ${st}>수량</th><th class="n" colspan="2" ${st}>단가</th><th class="n" colspan="2" ${st}>금액</th></tr></thead><tbody>
   <tr><td colspan="15" style="text-align:center;font-weight:700;background:#d9d9d9">원료 및 첨가제</td></tr>
@@ -409,7 +425,7 @@ const xb=(l,r,t,b)=>{const o={};[['left',l],['right',r],['top',t],['bottom',b]].
 const xa=(h)=>({horizontal:h||'center',vertical:'center'});
 const serial=d=>{const [y,m,dd]=d.split('-').map(Number);return (Date.UTC(y,m-1,dd)-Date.UTC(1899,11,30))/864e5};
 function sheetVendor(m){
-  const R=vendorReport(m),aoa=[],rowsH=[],DF='mm"월"\\ dd"일"';
+  const R=vendorReport(m,S.onlyVendor),aoa=[],rowsH=[],DF='mm"월"\\ dd"일"';
   const base=(i,last,top)=>({font:xf(10,1),alignment:xa(i===3?'right':'center'),border:xb(i===0?'thin':'hair',i===7?'thin':'hair',top?'thin':'hair',last?'thin':'hair')});
   aoa.push([xc(mmOf(m)+' 원료 구매현황',{font:xf(16,1),alignment:xa()}),...Array(7).fill(xc('',{}))]);rowsH.push({hpt:50.25});
   aoa.push([]);rowsH.push({});
@@ -426,7 +442,7 @@ function sheetVendor(m){
       xc(i<0?'합계금액':d?d.l:'',lb),rt?xc(rt[0],bx):E,rt?xc(rt[1],bx,CM):E]);rowsH.push({hpt:24})}
   const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=[13,24.9,18.6,15.5,16.9,16.6,18,21.1].map(w=>({wch:w}));ws['!rows']=rowsH;ws['!merges']=[XLSX.utils.decode_range('A1:H1')];return ws}
 function sheetItem(m){
-  const R=itemReport(m),pm=prevYm(m),aoa=[],rowsH=[],PC='0%',NF='[Blue]#,##0;[Red]\\-#,##0',T='thin';
+  const R=itemReport(m,S.onlyItem),pm=prevYm(m),aoa=[],rowsH=[],PC='0%',NF='[Blue]#,##0;[Red]\\-#,##0',T='thin';
   const hd={font:xf(12,1),alignment:xa(),border:xb(T,T,T,T)},dk={font:xf(12,1,'FFFFFF'),alignment:xa(),border:xb('medium',T,'medium',T),fill:{patternType:'solid',fgColor:{rgb:'404040'}}};
   const H=(v,s)=>xc(v,s||hd);
   aoa.push([xc(mmOf(m)+' 품목별 원료 구매내역',{font:xf(30,1),alignment:xa()}),...Array(14).fill(xc('',{}))]);rowsH.push({hpt:40.5});
