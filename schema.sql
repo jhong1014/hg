@@ -211,7 +211,11 @@ begin
   select json_build_object(
     'is_default', (select crypt('1234', value) = value from hg_settings where key = 'pin_hash'),
     'vendors', (select coalesce(json_agg(json_build_object('code', code, 'name', name, 'off', pay_month_offset, 'day', pay_day,
-                  'bank', bank_name, 'acct', account_no, 'contact', contact, 'sec', report_section, 'ord', report_order, 'rep', rep_item) order by name), '[]') from hg_suppliers where is_active),
+                  'bank', bank_name, 'acct', account_no, 'contact', contact, 'sec', report_section, 'ord', report_order, 'rep', rep_item,
+                  'del', not is_active) order by name), '[]')
+                from hg_suppliers s0 where is_active      -- 삭제한 거래처도 입고 내역이 남아 있으면 보고서용으로 함께 보냄
+                   or exists (select 1 from hg_receipts r join hg_supplier_items si on si.id = r.supplier_item_id
+                              where si.supplier_id = s0.id and r.voided_at is null)),
     'items', (select coalesce(json_agg(json_build_object('id', si.id, 'sap', m.sap_code, 'name', m.name, 'raw', si.raw_name, 'grp', m.group_name,
                   'cat', si.category, 'tax', si.tax_code, 'shelf', m.shelf_life, 'v', s.code,
                   'hist', (select coalesce(json_agg(json_build_array(ph.valid_from, ph.unit_price) order by ph.valid_from), '[]')
@@ -415,7 +419,30 @@ begin
           nullif(p_data->>'sec','')::smallint, nullif(p_data->>'ord','')::int, nullif(p_data->>'rep',''))
   on conflict (code) do update set name = excluded.name, pay_month_offset = excluded.pay_month_offset, pay_day = excluded.pay_day,
           bank_name = excluded.bank_name, account_no = excluded.account_no, contact = excluded.contact,
-          report_section = excluded.report_section, report_order = excluded.report_order, rep_item = excluded.rep_item;
+          report_section = excluded.report_section, report_order = excluded.report_order, rep_item = excluded.rep_item,
+          is_active = true;
+end $$;
+
+-- 거래처 삭제. 입고·정산 기록이 없으면 품목·단가 이력과 함께 완전히 지우고,
+-- 기록이 있으면 과거 보고서가 맞도록 '사용중지'(목록에서 숨김)로 처리합니다.
+create or replace function hg_delete_supplier(p_token uuid, p_code text) returns json
+language plpgsql security definer set search_path = public as $$
+declare v_sup bigint; v_used boolean;
+begin
+  perform hg_auth(p_token);
+  select id into v_sup from hg_suppliers where code = p_code;
+  if v_sup is null then raise exception '거래처를 찾을 수 없습니다'; end if;
+  v_used := exists (select 1 from hg_receipts r join hg_supplier_items si on si.id = r.supplier_item_id where si.supplier_id = v_sup)
+         or exists (select 1 from hg_settlements where supplier_id = v_sup);
+  if v_used then
+    update hg_supplier_items set is_active = false where supplier_id = v_sup;
+    update hg_suppliers set is_active = false where id = v_sup;
+    return json_build_object('ok', true, 'mode', 'hidden');
+  end if;
+  delete from hg_price_history where supplier_item_id in (select id from hg_supplier_items where supplier_id = v_sup);
+  delete from hg_supplier_items where supplier_id = v_sup;
+  delete from hg_suppliers where id = v_sup;
+  return json_build_object('ok', true, 'mode', 'deleted');
 end $$;
 
 create or replace function hg_set_settlement(p_token uuid, p_ym text, p_code text, p_voucher text, p_due date, p_amount numeric default null) returns void
@@ -448,5 +475,5 @@ revoke all on function hg_auth(uuid) from public, anon, authenticated;
 grant execute on function hg_login(text), hg_logout(uuid), hg_change_pin(uuid, text, text), hg_load(uuid),
   hg_add_receipts(uuid, jsonb, jsonb), hg_update_receipt(uuid, bigint, jsonb), hg_void_receipt(uuid, bigint), hg_revert_batch(uuid, bigint),
   hg_add_lot(uuid, text, text, text, text, text), hg_upsert_master(uuid, jsonb, jsonb),
-  hg_save_supplier(uuid, text, jsonb), hg_set_settlement(uuid, text, text, text, date, numeric),
+  hg_save_supplier(uuid, text, jsonb), hg_delete_supplier(uuid, text), hg_set_settlement(uuid, text, text, text, date, numeric),
   hg_save_report_items(uuid, jsonb) to anon, authenticated;

@@ -158,7 +158,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const pad=n=>String(n).padStart(2,'0');
 const dstr=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const today=()=>dstr(new Date());
-let D={vendors:[],items:[]},V={},TX=[],LOTS=[],BATCH=[],SETTLE={},RIT=[],IS_DEFAULT=false;
+let D={vendors:[],items:[]},V={},ALLV=[],TX=[],LOTS=[],BATCH=[],SETTLE={},RIT=[],IS_DEFAULT=false;
 const ym=d=>d.slice(2,4)+d.slice(5,7);
 const supply=t=>t.price?Math.round(t.qty*t.price):0, vat=t=>t.tax==='V1'?Math.round(supply(t)*0.1):0, total=t=>supply(t)+vat(t);
 function weekLabel(d){const dt=new Date(d+'T00:00');let n=0;for(let i=1;i<=dt.getDate();i++){if(new Date(dt.getFullYear(),dt.getMonth(),i).getDay()===1)n++}return (dt.getMonth()+1)+'월'+Math.max(1,n)+'주차'}
@@ -170,13 +170,13 @@ function dueOf(code,m){const s=SETTLE[m+'|'+code];if(s&&s.due)return s.due;const
   const d=new Date(2000+ +m.slice(0,2),+m.slice(2)-1+(v.off||0),v.day);while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()+1);return dstr(d)}
 function applyData(j){
   IS_DEFAULT=!!j.is_default;
-  D.vendors=j.vendors;V=Object.fromEntries(D.vendors.map(v=>[v.code,v]));
+  ALLV=j.vendors;D.vendors=ALLV.filter(v=>!v.del);V=Object.fromEntries(ALLV.map(v=>[v.code,v]));
   const td=today();
   D.items=j.items.map(i=>{i.hist=i.hist.map(h=>[h[0],+h[1]]);i.price=priceAt(i,td);return i});
   TX=j.tx.map(t=>({...t,qty:+t.qty,price:t.price==null?null:+t.price,tare:t.tare==null?null:+t.tare,gross:t.gross==null?null:+t.gross}));
   LOTS=j.lots;BATCH=j.batches;RIT=j.ritems||[];SETTLE={};j.settle.forEach(s=>SETTLE[s.ym+'|'+s.v]=s);
   if(!S.month||!getMonths().includes(S.month)||!S.loaded){const ms=[...new Set(TX.map(t=>ym(t.date)))].sort();S.month=ms.length?ms[ms.length-1]:ym(td);S.loaded=true}
-  if(!V[S.vendor])S.vendor=(D.vendors[0]||{}).code||'';
+  if(!V[S.vendor]||V[S.vendor].del)S.vendor=(D.vendors[0]||{}).code||'';
 }
 const S={onlyItem:false,onlyVendor:false,page:'dash',month:'',regTab:'gen',vendor:'',item:null,q:'',cat:'',mTab:'item',mSel:0,bTab:'rc',lot:null,loaded:false};
 const monthName=m=>'20'+m.slice(0,2)+'년 '+(+m.slice(2))+'월';
@@ -317,14 +317,14 @@ function newLot(){const mats=[...new Map(LOTS.map(l=>[l.sap+'|'+l.name,l])).valu
 
 /* ---------- 입고 내역 ---------- */
 function listRows(){let rows=inMonth(S.month);if(S.cat)rows=rows.filter(t=>t.cat===S.cat);
-  if(S.q){const q=S.q.toLowerCase();rows=rows.filter(t=>(t.raw+t.vname+t.sap+t.name+t.inpo+t.po).toLowerCase().includes(q))}return rows}
+  if(S.q){const q=S.q.toLowerCase();rows=rows.filter(t=>(t.raw+t.vname+t.v+t.sap+t.name+t.inpo+t.po).toLowerCase().includes(q))}return rows}
 function list(){
   const cats=[...new Set(inMonth(S.month).map(t=>t.cat))], rows=listRows();
   const show=rows.slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id).slice(0,300);
   return head('입고 내역',`${monthName(S.month)} · ${fmt(rows.length)}건`+(rows.length>300?' (최근 300건 표시, 전체는 엑셀 내보내기)':''),
-   monthSel()+`<select onchange="set('cat',this.value)"><option value="">구분 전체</option>${cats.map(c=>`<option ${c===S.cat?'selected':''}>${c}</option>`).join('')}</select><input type="search" placeholder="원료·거래처·PO 검색" value="${esc(S.q)}" onchange="set('q',this.value)"><button class="btn" onclick="S.bTab='rc';go('bulk')">엑셀 일괄 입력</button><button class="btn" onclick="exportList()">엑셀 내보내기</button>`)+
-  `<div class="card"><div class="scroll" style="max-height:640px"><table><thead><tr><th>날짜</th><th>주차</th><th>구분</th><th>SAP</th><th>원료명</th><th>거래처</th><th>과세</th><th class="n">수량(kg)</th><th class="n">단가</th><th class="n">공급가액</th><th class="n">부가세</th><th class="n">총금액</th><th>구매오더</th><th>입고PO</th><th>T/B</th><th class="n">계근표</th><th></th></tr></thead><tbody>
-  ${show.map(t=>`<tr><td>${t.date}</td><td class="mut">${weekLabel(t.date)}</td><td><span class="tag ${t.cat==='주원료'?'g':t.cat==='부원료'?'o':''}">${t.cat}</span></td><td>${esc(t.sap)}</td><td>${esc(t.raw)}</td><td>${esc(t.vname||'-')}</td><td>${t.tax}</td><td class="n">${fmt(t.qty)}</td><td class="n">${fmt(t.price)}</td><td class="n">${t.price?fmt(supply(t)):'-'}</td><td class="n">${t.price?fmt(vat(t)):'-'}</td><td class="n">${t.price?fmt(total(t)):'-'}</td><td>${esc(t.po)}</td><td>${esc(t.inpo)}</td><td>${t.tb?`${t.tbcnt??''}개 / −${t.tare??''}kg`:''}</td><td class="n">${t.gross?fmt(t.gross):''}</td><td><button class="btn sm" onclick="editTx(${t.id})">수정</button> <button class="btn sm" onclick="delTx(${t.id})">삭제</button></td></tr>`).join('')||'<tr><td colspan="17" class="mut">내역이 없습니다</td></tr>'}
+   monthSel()+`<select onchange="set('cat',this.value)"><option value="">구분 전체</option>${cats.map(c=>`<option ${c===S.cat?'selected':''}>${c}</option>`).join('')}</select><input type="search" placeholder="원료·거래처·코드·PO 검색" value="${esc(S.q)}" onchange="set('q',this.value)"><button class="btn" onclick="S.bTab='rc';go('bulk')">엑셀 일괄 입력</button><button class="btn" onclick="exportList()">엑셀 내보내기</button>`)+
+  `<div class="card"><div class="scroll" style="max-height:640px"><table><thead><tr><th>날짜</th><th>거래처코드</th><th>구분</th><th>SAP</th><th>원료명</th><th>거래처</th><th>과세</th><th class="n">수량(kg)</th><th class="n">단가</th><th class="n">공급가액</th><th class="n">부가세</th><th class="n">총금액</th><th>구매오더</th><th>입고PO</th><th>T/B</th><th class="n">계근표</th><th></th></tr></thead><tbody>
+  ${show.map(t=>`<tr><td>${t.date}</td><td>${esc(t.v||'-')}</td><td><span class="tag ${t.cat==='주원료'?'g':t.cat==='부원료'?'o':''}">${t.cat}</span></td><td>${esc(t.sap)}</td><td>${esc(t.raw)}</td><td>${esc(t.vname||'-')}</td><td>${t.tax}</td><td class="n">${fmt(t.qty)}</td><td class="n">${fmt(t.price)}</td><td class="n">${t.price?fmt(supply(t)):'-'}</td><td class="n">${t.price?fmt(vat(t)):'-'}</td><td class="n">${t.price?fmt(total(t)):'-'}</td><td>${esc(t.po)}</td><td>${esc(t.inpo)}</td><td>${t.tb?`${t.tbcnt??''}개 / −${t.tare??''}kg`:''}</td><td class="n">${t.gross?fmt(t.gross):''}</td><td><button class="btn sm" onclick="editTx(${t.id})">수정</button> <button class="btn sm" onclick="delTx(${t.id})">삭제</button></td></tr>`).join('')||'<tr><td colspan="17" class="mut">내역이 없습니다</td></tr>'}
   </tbody><tfoot><tr><td colspan="7">합계 (${fmt(rows.length)}건)</td><td class="n">${fmt(sumBy(rows,t=>t.qty))}</td><td></td><td class="n">${fmt(sumBy(rows,supply))}</td><td class="n">${fmt(sumBy(rows,vat))}</td><td class="n">${fmt(sumBy(rows,total))}</td><td colspan="5"></td></tr></tfoot></table></div></div>`;
 }
 function delTx(id){const t=TX.find(x=>x.id===id);if(!t||!confirm(`${t.date} ${t.raw} ${fmt(t.qty)}kg 내역을 삭제할까요?`))return;act(()=>api('hg_void_receipt',{p_id:id}),'삭제했습니다')}
@@ -343,15 +343,15 @@ function editTx(id){const t=TX.find(x=>x.id===id);if(!t)return;
        if(np!=null&&np!==+v.price&&confirm(`원료를 바꿨습니다. 단가를 ${ni.raw}의 ${fmt(np)}원으로 바꿀까요?\n(취소를 누르면 입력한 ${fmt(+v.price)}원을 유지합니다)`))v.price=String(np)}
      act(async()=>{await api('hg_update_receipt',{p_id:id,p_data:v});closeModal()},'수정했습니다')})}
 function exportList(){const rows=listRows();if(!rows.length){toast('내보낼 내역이 없습니다');return}
-  saveSheet('입고내역_'+S.month,[['날짜','주차','구분','SAP','품목','원료명','면/과세','수량','단가','거래처코드','거래처명','구매오더','입고PO','공급가액','부가세','총금액','T/B','T/B수량','T/B무게','계근표'],
-   ...rows.map(t=>[t.date,weekLabel(t.date),t.cat,t.sap,t.name,t.raw,t.tax,t.qty,t.price??'',t.v,t.vname,t.po,t.inpo,t.price?supply(t):'',t.price?vat(t):'',t.price?total(t):'',t.tb,t.tbcnt??'',t.tare??'',t.gross??''])])}
+  saveSheet('입고내역_'+S.month,[['날짜','거래처코드','구분','SAP','품목','원료명','면/과세','수량','단가','거래처명','구매오더','입고PO','공급가액','부가세','총금액','T/B','T/B수량','T/B무게','계근표'],
+   ...rows.map(t=>[t.date,t.v,t.cat,t.sap,t.name,t.raw,t.tax,t.qty,t.price??'',t.vname,t.po,t.inpo,t.price?supply(t):'',t.price?vat(t):'',t.price?total(t):'',t.tb,t.tbcnt??'',t.tare??'',t.gross??''])])}
 
 /* ---------- 업체별 (원본 엑셀 「업체별」 시트 양식) ---------- */
 const mmOf=m=>m.slice(2)+'월';
 function vendorReport(m,only){
   const g={};priced(m).forEach(t=>{g[t.v]=g[t.v]||{amt:0,items:{}};g[t.v].amt+=total(t);g[t.v].items[t.name]=(g[t.v].items[t.name]||0)+total(t)});
   const secOf=v=>{if(v.sec)return v.sec;const cs=D.items.filter(i=>i.v===v.code).map(i=>i.cat);return cs.length&&cs.every(c=>c==='포장재')?2:cs.length&&cs.every(c=>c==='운반비')?3:1};
-  const rows=D.vendors.filter(v=>v.ord!=null||g[v.code]).map(v=>{const x=g[v.code],s=SETTLE[m+'|'+v.code]||{};const its=x?Object.entries(x.items).sort((a,b)=>b[1]-a[1]):[];
+  const rows=ALLV.filter(v=>v.del?g[v.code]:(v.ord!=null||g[v.code])).map(v=>{const x=g[v.code],s=SETTLE[m+'|'+v.code]||{};const its=x?Object.entries(x.items).sort((a,b)=>b[1]-a[1]):[];
     const calc=x?x.amt:0,manual=!calc&&secOf(v)===3&&s.amount!=null;
     return {code:v.code,name:v.name,sec:secOf(v),ord:v.ord??1e9,extra:v.ord==null,rep:v.rep||(its.length?its[0][0]+(its.length>1?' 외':''):''),
       calc,amt:manual?+s.amount:calc,manual,due:dueOf(v.code,m),bank:v.bank||'',acct:v.acct||'',voucher:s.voucher||'',term:termLabel(v).replace(' ','')}})
@@ -471,8 +471,8 @@ function master(){
   const bulkBtn=`<button class="btn" onclick="S.bTab='ms';go('bulk')">엑셀 일괄 입력</button>`;
   const tabs=`<div class="tabs"><button class="${S.mTab==='item'?'on':''}" onclick="set('mTab','item')">품목 · 단가 (${D.items.length})</button><button class="${S.mTab==='vendor'?'on':''}" onclick="set('mTab','vendor')">거래처 (${D.vendors.length})</button></div>`;
   if(S.mTab==='vendor'){
-    return head('기준 정보','거래처를 클릭하면 결제조건·은행·계좌를 수정할 수 있습니다.',bulkBtn+`<button class="btn pri" onclick="editVendor()">+ 거래처</button>`)+tabs+`<div class="card"><div class="scroll" style="max-height:640px"><table><thead><tr><th>거래처코드</th><th>거래처명</th><th class="n">취급 품목</th><th>결제조건</th><th>은행</th><th>계좌번호</th><th>담당자·연락처</th></tr></thead><tbody>
-    ${D.vendors.map(v=>`<tr style="cursor:pointer" onclick="editVendor('${esc(v.code)}')"><td>${esc(v.code)}</td><td>${esc(v.name)}</td><td class="n">${D.items.filter(i=>i.v===v.code).length}</td><td>${termLabel(v)||'<span class="tag w">미등록</span>'}</td><td>${esc(v.bank||'')}</td><td>${esc(v.acct||'')}</td><td>${esc(v.contact||'')}</td></tr>`).join('')||'<tr><td colspan="7" class="mut">거래처가 없습니다</td></tr>'}</tbody></table></div></div>`;
+    return head('기준 정보','거래처를 클릭하면 결제조건·은행·계좌를 수정할 수 있습니다.',bulkBtn+`<button class="btn pri" onclick="editVendor()">+ 거래처</button>`)+tabs+`<div class="card"><div class="scroll" style="max-height:640px"><table><thead><tr><th>거래처코드</th><th>거래처명</th><th class="n">취급 품목</th><th>결제조건</th><th>은행</th><th>계좌번호</th><th>담당자·연락처</th><th></th></tr></thead><tbody>
+    ${D.vendors.map(v=>`<tr style="cursor:pointer" onclick="editVendor('${esc(v.code)}')"><td>${esc(v.code)}</td><td>${esc(v.name)}</td><td class="n">${D.items.filter(i=>i.v===v.code).length}</td><td>${termLabel(v)||'<span class="tag w">미등록</span>'}</td><td>${esc(v.bank||'')}</td><td>${esc(v.acct||'')}</td><td>${esc(v.contact||'')}</td><td><button class="btn sm" onclick="event.stopPropagation();delVendor('${esc(v.code)}')">삭제</button></td></tr>`).join('')||'<tr><td colspan="8" class="mut">거래처가 없습니다</td></tr>'}</tbody></table></div></div>`;
   }
   const hd=head('기준 정보','품목을 클릭하면 단가 이력을 볼 수 있습니다.',bulkBtn+`<button class="btn pri" onclick="editItem()">+ 품목</button>`)+tabs;
   if(!D.items.length)return hd+`<div class="note">등록된 품목이 없습니다. 「+ 품목」 또는 「엑셀 일괄 입력」으로 기초자료를 넣으세요.</div>`;
@@ -511,8 +511,12 @@ function editVendor(code){const v=code?V[code]:null;
     {key:'rep',label:'대표 품명',value:v?v.rep:'',ph:'업체별 보고서에 표시'},{key:'sec',label:'보고서 구분',type:'select',value:v&&v.sec!=null?v.sec:'',options:[['','자동'],['1','1. 원료·첨가제'],['2','2. 포장지'],['3','3. 운송비']]},
     {key:'ord',label:'보고서 순서',type:'number',value:v?v.ord??'':'',ph:'비우면 맨 뒤'}],
    x=>{const c=v?v.code:x.code;if(!c||!x.name){toast('거래처코드와 거래처명을 입력하세요');return}
-     if(!v&&V[c]){toast('이미 있는 거래처코드입니다');return}
+     if(!v&&V[c]&&!V[c].del){toast('이미 있는 거래처코드입니다');return}
      act(async()=>{await api('hg_save_supplier',{p_code:c,p_data:x});closeModal()},'저장했습니다')})}
+function delVendor(code){const v=V[code];if(!v)return;
+  const n=D.items.filter(i=>i.v===code).length,t=TX.filter(x=>x.v===code).length;
+  if(!confirm(`거래처 「${v.name}」(${code})를 삭제할까요?`+(n?`\n취급 품목 ${n}개도 함께 삭제됩니다.`:'')+(t?`\n입고 내역 ${fmt(t)}건은 그대로 남고, 거래처는 목록에서만 숨겨집니다.`:'')))return;
+  act(async()=>{await api('hg_delete_supplier',{p_code:code});if(S.vendor===code)S.vendor=''},'거래처를 삭제했습니다')}
 
 /* ---------- 일괄 입력 ---------- */
 const SPEC={
@@ -555,7 +559,8 @@ function checkRc(o){
   if(!o['날짜'])m.push('날짜 없음');else if(!date)m.push('날짜를 읽을 수 없음');
   if(!raw)m.push('원료명 없음');
   if(vc){ven=V[vc]||D.vendors.find(x=>x.name===vc);
-    if(!ven)m.push('등록되지 않은 거래처코드');
+    if(ven&&ven.del){m.push('삭제한 거래처');ven=null}
+    else if(!ven)m.push('등록되지 않은 거래처코드');
     else if(raw){const cand=D.items.filter(i=>i.v===ven.code&&i.raw===raw);it=cand.find(i=>i.sap===o['SAP'])||cand[0];if(!it){const o2=D.items.find(i=>i.raw===raw);m.push(o2?`이 거래처 품목이 아님 (${(V[o2.v]||{}).name} 품목)`:'기초자료에 없는 원료명')}}}
   else if(raw){const cand=LOTS.filter(l=>l.raw===raw);lot=cand.find(l=>l.inpo===o['입고PO'])||cand[0];if(!lot)m.push(D.items.some(i=>i.raw===raw)?'거래처코드 없음':'등록되지 않은 모선(원료명)')}
   const g=num(o['계근표']),tare=num(o['T/B무게']),cnt=num(o['T/B수량']);let q=num(o['수량']),calc=false;
@@ -581,6 +586,7 @@ function checkMs(o){
   let from=null;if(o['적용시작일']){from=normDate(o['적용시작일']);if(!from)m.push('적용시작일을 읽을 수 없음')}
   if(!from)from=today();
   const ven=V[code];let newV=false;
+  if(ven&&ven.del)m.push('삭제한 거래처 — 거래처 화면에서 다시 추가한 뒤 입력');
   if(code&&!ven){if(o['거래처명']){newV=true;w.push('새 거래처로 함께 등록')}else m.push('새 거래처코드 — 거래처명 필요')}
   const cand=code&&raw?D.items.filter(i=>i.v===code&&i.raw===raw):[];const it=cand.find(i=>i.sap===o['SAP'])||(cand.length===1?cand[0]:null);const ch=[];
   if(it&&!m.length){const cur=it.hist.length?it.hist[it.hist.length-1][1]:null;
@@ -620,7 +626,7 @@ function bulk(){
   const step1=`<div class="card"><h2><span class="stepn">1</span>양식 받기 <span>열 순서가 바뀌어도 제목으로 인식</span></h2>
    <table><thead><tr><th>열 제목</th><th>필수</th><th>설명</th></tr></thead><tbody>${sp.cols.map(c=>`<tr><td><b>${c[0]}</b></td><td>${c[1]?'<span class="tag o">필수</span>':'<span class="mut">선택</span>'}</td><td class="mut" style="white-space:normal">${c[2]||''}</td></tr>`).join('')}</tbody></table>
    <div class="pad" style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn pri" onclick="dlTemplate()">빈 양식 내려받기 (.xlsx)</button>${t==='ms'?`<button class="btn" onclick="dlMaster()">현재 기초자료 내려받기</button>`:''}</div>
-   <div class="pad mut" style="padding-top:0;font-size:12.5px">${t==='rc'?'구분·SAP·품목명·면과세·단가·금액·주차는 기초자료에서 자동으로 채워지므로 적지 않습니다. 과거 자료를 옮길 때는 「단가」 열을 추가하면 그 값으로 등록됩니다.':'「현재 기초자료 내려받기」로 받은 파일에서 단가만 고쳐 다시 올리면, 바뀐 행만 골라 단가 이력에 추가합니다. 거래처코드 + 원료명(+SAP)이 같으면 같은 품목으로 봅니다.'}</div></div>`;
+   <div class="pad mut" style="padding-top:0;font-size:12.5px">${t==='rc'?'구분·SAP·품목명·면과세·단가·금액은 기초자료에서 자동으로 채워지므로 적지 않습니다. 과거 자료를 옮길 때는 「단가」 열을 추가하면 그 값으로 등록됩니다.':'「현재 기초자료 내려받기」로 받은 파일에서 단가만 고쳐 다시 올리면, 바뀐 행만 골라 단가 이력에 추가합니다. 거래처코드 + 원료명(+SAP)이 같으면 같은 품목으로 봅니다.'}</div></div>`;
   const step2=`<div class="card"><h2><span class="stepn">2</span>데이터 넣기 <span>엑셀에서 복사해 붙여넣거나 파일 선택</span></h2><div class="pad">
    <label class="drop" ondragover="event.preventDefault();this.classList.add('over')" ondragleave="this.classList.remove('over')" ondrop="event.preventDefault();readFile(event.dataTransfer.files[0])">
      <input type="file" accept=".xlsx,.xls,.xlsm,.csv,.tsv,.txt" style="display:none" onchange="readFile(this.files[0])"><b>파일을 여기에 끌어다 놓거나 클릭해서 선택</b><span class="mut">.xlsx · .csv (첫 번째 시트를 읽습니다)</span></label>
