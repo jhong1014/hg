@@ -431,7 +431,8 @@ const mmOf=m=>m.slice(2)+'월';
 function vendorReport(m,only){
   const g={};priced(m).forEach(t=>{g[t.v]=g[t.v]||{amt:0,items:{}};g[t.v].amt+=total(t);g[t.v].items[t.name]=(g[t.v].items[t.name]||0)+total(t)});
   const secOf=v=>{if(v.sec)return v.sec;const cs=D.items.filter(i=>i.v===v.code).map(i=>i.cat);return cs.length&&cs.every(c=>c==='포장재')?2:cs.length&&cs.every(c=>c==='운반비')?3:1};
-  const rows=ALLV.filter(v=>v.del?g[v.code]:(v.ord!=null||g[v.code])).map(v=>{const x=g[v.code],s=SETTLE[m+'|'+v.code]||{};const its=x?Object.entries(x.items).sort((a,b)=>b[1]-a[1]):[];
+  const hasAmt=v=>{const s=SETTLE[m+'|'+v.code];return s&&s.amount!=null};
+  const rows=ALLV.filter(v=>v.del?(g[v.code]||hasAmt(v)):(v.ord!=null||g[v.code]||v.sec===2||v.sec===3||hasAmt(v))).map(v=>{const x=g[v.code],s=SETTLE[m+'|'+v.code]||{};const its=x?Object.entries(x.items).sort((a,b)=>b[1]-a[1]):[];
     const calc=x?x.amt:0,manual=!calc&&secOf(v)===3&&s.amount!=null;
     return {code:v.code,name:v.name,sec:secOf(v),ord:v.ord??1e9,extra:v.ord==null,rep:v.rep||(its.length?its[0][0]+(its.length>1?' 외':''):''),
       calc,amt:manual?+s.amount:calc,manual,due:dueOf(v.code,m),bank:v.bank||'',acct:v.acct||'',voucher:s.voucher||'',term:termLabel(v).replace(' ','')}})
@@ -460,17 +461,26 @@ function saveSettle(code,patch){const s={...(SETTLE[S.month+'|'+code]||{}),...pa
   act(()=>api('hg_set_settlement',{p_ym:S.month,p_code:code,p_voucher:s.voucher||'',p_due:s.due||null,p_amount:s.amount==null||s.amount===''?null:+s.amount}),'저장했습니다')}
 
 /* ---------- 품목별 (원본 엑셀 「품목별」 시트 양식) ---------- */
+const ISEC=[[1,'원료 및 첨가제'],[2,'포장재'],[3,'운반비 및 부대비']];
+const secOfCat=c=>c==='포장재'?2:c==='운반비'?3:1;
 function itemReport(m,only){
-  const agg=x=>{const g={};priced(x).forEach(t=>{const k=t.sap||t.name;const o=g[k]=g[k]||{name:t.name,q:0,a:0,ps:[],vs:[]};o.q+=t.qty;o.a+=total(t);o.ps.push(t.price);if(!o.vs.includes(t.vname))o.vs.push(t.vname)});return g};
+  const agg=x=>{const g={};priced(x).forEach(t=>{const k=t.sap||t.name;const o=g[k]=g[k]||{name:t.name,q:0,a:0,ps:[],vs:[],cat:t.cat};o.q+=t.qty||0;o.a+=total(t);o.ps.push(t.price);if(!o.vs.includes(t.vname))o.vs.push(t.vname)});return g};
   const c=agg(m),p=agg(prevYm(m)),avg=a=>a&&a.ps.length?a.ps.reduce((s,x)=>s+x,0)/a.ps.length:null;
-  const mk=(sap,label,vlabel,extra)=>{const C=c[sap],P=p[sap],r={sap,label,vlabel,extra,pq:P?P.q:0,pp:avg(P),pa:P?P.a:0,cq:C?C.q:0,cp:avg(C),ca:C?C.a:0};
-    r.dq=r.cq-r.pq;r.dqp=r.pq?r.dq/r.pq:null;r.dp=r.cp!=null&&r.pp!=null?r.cp-r.pp:null;r.dpp=r.dp!=null&&r.pp?r.dp/r.pp:null;r.da=r.ca-r.pa;r.dap=r.pa?r.da/r.pa:null;return r};
+  const calc=r=>{r.dq=r.cq-r.pq;r.dqp=r.pq?r.dq/r.pq:null;r.dp=r.cp!=null&&r.pp!=null?r.cp-r.pp:null;r.dpp=r.dp!=null&&r.pp?r.dp/r.pp:null;r.da=r.ca-r.pa;r.dap=r.pa?r.da/r.pa:null;return r};
+  const catOf=sap=>{const x=c[sap]||p[sap];if(x)return x.cat;const it=D.items.find(i=>i.sap===sap);return it?it.cat:''};
+  const mk=(sap,label,vlabel,extra)=>{const C=c[sap],P=p[sap];
+    return calc({sap,label,vlabel,extra,sec:secOfCat(catOf(sap)),pq:P?P.q:0,pp:avg(P),pa:P?P.a:0,cq:C?C.q:0,cp:avg(C),ca:C?C.a:0})};
   const used=new Set(RIT.map(x=>x.sap)),rows=RIT.map(x=>mk(x.sap,x.label,x.vlabel||'',false));
   [...new Set([...Object.keys(c),...Object.keys(p)])].filter(k=>!used.has(k)).sort().forEach(k=>{const x=c[k]||p[k];rows.push(mk(k,x.name,x.vs[0]+(x.vs.length>1?' 외':''),true))});
-  const T={pq:sumBy(rows,r=>r.pq),pa:sumBy(rows,r=>r.pa),cq:sumBy(rows,r=>r.cq),ca:sumBy(rows,r=>r.ca)};
-  T.dq=T.cq-T.pq;T.dqp=T.pq?T.dq/T.pq:null;T.da=T.ca-T.pa;T.dap=T.pa?T.da/T.pa:null;
-  const shown=only?rows.filter(r=>r.cq||r.ca):rows;
-  return {rows:shown,T,hidden:rows.length-shown.length,hiddenPrev:only?sumBy(rows.filter(r=>!(r.cq||r.ca)),r=>r.pa):0};
+  // 운반비·부대비: 입고 내역 없이 「업체별」에서 금액을 직접 적은 거래처(보고서 구분 3)
+  ALLV.filter(v=>v.sec===3).forEach(v=>{const a=SETTLE[m+'|'+v.code],b=SETTLE[prevYm(m)+'|'+v.code],ca=a&&a.amount!=null?+a.amount:0,pa=b&&b.amount!=null?+b.amount:0;
+    if(!ca&&!pa&&v.del)return;if(rows.some(r=>r.sap===v.code))return;
+    rows.push(calc({sap:v.code,label:v.rep||v.name,vlabel:v.name,extra:false,sec:3,manual:true,pq:0,pp:null,pa,cq:0,cp:null,ca}))});
+  const tot=rs=>{const T={pq:sumBy(rs,r=>r.pq),pa:sumBy(rs,r=>r.pa),cq:sumBy(rs,r=>r.cq),ca:sumBy(rs,r=>r.ca)};T.dq=T.cq-T.pq;T.dqp=T.pq?T.dq/T.pq:null;T.da=T.ca-T.pa;T.dap=T.pa?T.da/T.pa:null;return T};
+  const vis=r=>!only||r.cq||r.ca;
+  const secs=ISEC.map(([k,label])=>{const all=rows.filter(r=>r.sec===k);return {k,label,rows:all.filter(vis),T:tot(all)}});
+  const shown=rows.filter(vis);
+  return {secs,rows:shown,T:tot(rows),hidden:rows.length-shown.length,hiddenPrev:only?sumBy(rows.filter(r=>!vis(r)),r=>r.pa):0};
 }
 function item(){
   const R=itemReport(S.month,S.onlyItem),pm=prevYm(S.month);
@@ -478,16 +488,18 @@ function item(){
   const pc=(v,d=0)=>v==null?'<td class="n mut"></td>':`<td class="n ${v>0?'up':v<0?'down':''}">${(v*100).toFixed(d)}%</td>`;
   const z=v=>v?fmt(v):'-';
   const st='style="top:33px"';
-  return head(`${mmOf(S.month)} 품목별 원료 구매내역`,'원본 엑셀 「품목별」 시트와 같은 순서·양식입니다. 양식에 없는 품목이 입고되면 맨 아래에 「양식 외」로 붙습니다.',monthSel()+`<label style="display:flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap"><input type="checkbox" ${S.onlyItem?'checked':''} onchange="set('onlyItem',this.checked)">당월 데이터가 있는 원료만</label><button class="btn" onclick="editReportItems()">양식 품목 편집</button><button class="btn pri" onclick="exportReports()">엑셀 다운로드</button><button class="btn" onclick="window.print()">인쇄</button>`)+
+  return head(`${mmOf(S.month)} 품목별 원료 구매내역`,'원본 엑셀 「품목별」 양식입니다. 원료 및 첨가제 · 포장재 · 운반비 및 부대비로 나누어 각 소계를 내고, 맨 아래에 합계를 냅니다. 운반비·부대비는 「업체별」에서 직접 적은 금액도 포함합니다.',monthSel()+`<label style="display:flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap"><input type="checkbox" ${S.onlyItem?'checked':''} onchange="set('onlyItem',this.checked)">당월 데이터가 있는 원료만</label><button class="btn" onclick="editReportItems()">양식 품목 편집</button><button class="btn pri" onclick="exportReports()">엑셀 다운로드</button><button class="btn" onclick="window.print()">인쇄</button>`)+
   (R.hidden?`<div class="note">당월 입고가 없는 원료 ${R.hidden}개를 숨겼습니다.${R.hiddenPrev?` 숨긴 원료의 전월 금액 ${fmt(R.hiddenPrev)}원은 소계의 전월·증감에 그대로 포함됩니다.`:''} 엑셀 다운로드에도 같은 조건이 적용됩니다.</div>`:'')+
   `<div class="card"><div class="scroll" style="max-height:none"><table class="rep"><thead><tr><th rowspan="2">품명</th><th rowspan="2">원료 코드</th><th rowspan="2">거래처</th><th colspan="3" style="text-align:center">전월 ${mmOf(pm)}</th><th colspan="3" style="text-align:center;background:#404040;color:#fff">당월 ${mmOf(S.month)}</th><th colspan="6" style="text-align:center">전월비 증감</th></tr>
   <tr><th class="n" ${st}>수량</th><th class="n" ${st}>단가</th><th class="n" ${st}>금액</th><th class="n" ${st}>수량</th><th class="n" ${st}>단가</th><th class="n" ${st}>금액</th><th class="n" colspan="2" ${st}>수량</th><th class="n" colspan="2" ${st}>단가</th><th class="n" colspan="2" ${st}>금액</th></tr></thead><tbody>
-  <tr><td colspan="15" style="text-align:center;font-weight:700;background:#d9d9d9">원료 및 첨가제</td></tr>
-  ${R.rows.map(r=>`<tr><td><b>${esc(r.label)}</b>${r.extra?' <span class="tag w">양식 외</span>':''}</td><td>${esc(r.sap)}</td><td class="mut">${esc(r.vlabel)}</td>
+  ${R.secs.map((S2,si)=>`${si?'<tr><td colspan="15" style="border:0;height:14px"></td></tr>':''}<tr><td colspan="15" style="text-align:center;font-weight:700;background:#d9d9d9">${S2.label}</td></tr>
+  ${S2.rows.map(r=>`<tr><td><b>${esc(r.label)}</b>${r.extra?' <span class="tag w">양식 외</span>':''}${r.manual?' <span class="tag">업체별 직접 입력</span>':''}</td><td>${esc(r.sap)}</td><td class="mut">${esc(r.vlabel)}</td>
    <td class="n">${z(r.pq)}</td><td class="n">${r.pp==null?'-':fmt(r.pp)}</td><td class="n">${z(r.pa)}</td><td class="n">${z(r.cq)}</td><td class="n">${r.cp==null?'-':fmt(r.cp)}</td><td class="n">${z(r.ca)}</td>
-   ${sg(r.dq||null)}${pc(r.dqp)}${sg(r.dp)}${pc(r.dpp)}${sg(r.da||null)}${pc(r.dap)}</tr>`).join('')}
-  </tbody><tfoot><tr style="background:#595959"><td></td><td style="text-align:center">소계</td><td></td><td class="n">${fmt(R.T.pq)}</td><td></td><td class="n">${fmt(R.T.pa)}</td><td class="n">${fmt(R.T.cq)}</td><td></td><td class="n">${fmt(R.T.ca)}</td>${sg(R.T.dq)}${pc(R.T.dqp,1)}<td></td><td></td>${sg(R.T.da)}${pc(R.T.dap,1)}</tr></tfoot></table></div></div>`;
+   ${sg(r.dq||null)}${pc(r.dqp)}${sg(r.dp)}${pc(r.dpp)}${sg(r.da||null)}${pc(r.dap)}</tr>`).join('')||'<tr><td colspan="15" class="mut" style="text-align:center">내역 없음</td></tr>'}
+  ${subRow('소계',S2.T,sg,pc)}`).join('')}
+  </tbody><tfoot><tr><td colspan="15" style="border:0;height:14px;background:none"></td></tr>${subRow('합계',R.T,sg,pc,'#262626')}</tfoot></table></div></div>`;
 }
+function subRow(lb,T,sg,pc,bg){return `<tr style="background:${bg||'#595959'};color:#fff;font-weight:700"><td></td><td style="text-align:center">${lb}</td><td></td><td class="n">${fmt(T.pq)}</td><td></td><td class="n">${fmt(T.pa)}</td><td class="n">${fmt(T.cq)}</td><td></td><td class="n">${fmt(T.ca)}</td><td class="n">${fmt(T.dq)}</td><td class="n">${T.dqp==null?'':(T.dqp*100).toFixed(1)+'%'}</td><td></td><td></td><td class="n">${fmt(T.da)}</td><td class="n">${T.dap==null?'':(T.dap*100).toFixed(1)+'%'}</td></tr>`}
 function editReportItems(){
   const cur=RIT.length?RIT:itemReport(S.month).rows.map(r=>({label:r.label,sap:r.sap,vlabel:r.vlabel}));
   modal('품목별 양식 편집',[{key:'rows',label:'',type:'textarea',value:cur.map(x=>[x.label,x.sap,x.vlabel||''].join(' | ')).join('\n'),ph:'품명 | 원료코드 | 거래처'}],
@@ -530,16 +542,24 @@ function sheetItem(m){
   aoa.push([H('품명'),H('원료 코드'),H('거래처'),H('전월 '+mmOf(pm)),H(''),H(''),H('당월 '+mmOf(m),dk),H('',dk),H('',dk),H('전월비 증감'),H(''),H(''),H(''),H(''),H('')]);rowsH.push({hpt:26.1});
   aoa.push([H(''),H(''),H(''),H('수량'),H('단가'),H('금액'),H('수량'),H('단가'),H('금액'),H('수량'),H(''),H('단가'),H(''),H('금액'),H('')]);rowsH.push({hpt:26.1});
   const sec={font:xf(12,1),alignment:xa(),border:xb(T,T,T,T),fill:{patternType:'solid',fgColor:{rgb:'D9D9D9'}}};
-  aoa.push([xc('원료 및 첨가제',sec),...Array(14).fill(xc('',sec))]);rowsH.push({hpt:26.1});
   const tx={font:xf(12),alignment:xa(),border:xb(T,T,null,T)},nm={font:xf(12),alignment:xa('right'),border:xb(T,T,null,T)},pcS={font:xf(12),alignment:xa('right'),border:xb('hair',T,null,T)};
   const N=(v,z)=>xc(v==null?'':v,nm,z||CM);
-  R.rows.forEach(r=>{aoa.push([xc(r.label,tx),xc(r.sap,tx),xc(r.vlabel,tx),N(r.pq),r.pp==null?xc('-',nm):N(r.pp),N(r.pa),N(r.cq),r.cp==null?xc('-',nm):N(r.cp),N(r.ca),
-    N(r.dq),xc(r.dqp==null?'':r.dqp,pcS,PC),N(r.dp),xc(r.dpp==null?'':r.dpp,pcS,PC),N(r.da,NF),xc(r.dap==null?'':r.dap,pcS,PC)]);rowsH.push({hpt:26.1})});
-  const ft=sz=>({font:xf(sz,1,'FFFFFF'),alignment:xa('right'),border:xb(T,T,T,T),fill:{patternType:'solid',fgColor:{rgb:'595959'}}}),f13={...ft(13),alignment:xa()},f14=ft(14);
-  const t=R.T;aoa.push([xc('',f13),xc('소계',f13),xc('',f13),xc(t.pq,f14,CM),xc('',f14),xc(t.pa,f14,CM),xc(t.cq,f14,CM),xc('',f14),xc(t.ca,f14,CM),xc(t.dq,f14,CM),xc(t.dqp==null?'':t.dqp,f14,'0.0%'),xc('',f14),xc('',f14),xc(t.da,f14,NF),xc(t.dap==null?'':t.dap,f14,'0.0%')]);rowsH.push({hpt:26.1});
+  const ft=(sz,rgb)=>({font:xf(sz,1,'FFFFFF'),alignment:xa('right'),border:xb(T,T,T,T),fill:{patternType:'solid',fgColor:{rgb:rgb||'595959'}}});
+  const sumRow=(lb,t,rgb)=>{const f13={...ft(13,rgb),alignment:xa()},f14=ft(14,rgb);
+    aoa.push([xc('',f13),xc(lb,f13),xc('',f13),xc(t.pq,f14,CM),xc('',f14),xc(t.pa,f14,CM),xc(t.cq,f14,CM),xc('',f14),xc(t.ca,f14,CM),xc(t.dq,f14,CM),xc(t.dqp==null?'':t.dqp,f14,'0.0%'),xc('',f14),xc('',f14),xc(t.da,f14,NF),xc(t.dap==null?'':t.dap,f14,'0.0%')]);rowsH.push({hpt:26.1})};
+  const merges=['A1:O1','A3:A4','B3:B4','C3:C4','D3:F3','G3:I3','J3:O3','J4:K4','L4:M4','N4:O4'];
+  R.secs.forEach((S2,si)=>{
+    if(si){aoa.push([]);rowsH.push({hpt:14})}                       // 섹션 사이 한 행 띄움
+    merges.push(`A${aoa.length+1}:O${aoa.length+1}`);
+    aoa.push([xc(S2.label,sec),...Array(14).fill(xc('',sec))]);rowsH.push({hpt:26.1});
+    S2.rows.forEach(r=>{aoa.push([xc(r.label,tx),xc(r.sap,tx),xc(r.vlabel,tx),N(r.pq),r.pp==null?xc('-',nm):N(r.pp),N(r.pa),N(r.cq),r.cp==null?xc('-',nm):N(r.cp),N(r.ca),
+      N(r.dq),xc(r.dqp==null?'':r.dqp,pcS,PC),N(r.dp),xc(r.dpp==null?'':r.dpp,pcS,PC),N(r.da,NF),xc(r.dap==null?'':r.dap,pcS,PC)]);rowsH.push({hpt:26.1})});
+    sumRow('소계',S2.T)});
+  aoa.push([]);rowsH.push({hpt:14});
+  sumRow('합계',R.T,'262626');
   const ws=XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols']=[21.2,13,22.4,16.1,11.2,20.2,21.2,11,20.2,17,10.8,13.2,13.4,18.9,10.5].map((w,i)=>({wch:w,...(i===11||i===12?{hidden:true}:{})}));
-  ws['!rows']=rowsH;ws['!merges']=['A1:O1','A3:A4','B3:B4','C3:C4','D3:F3','G3:I3','J3:O3','J4:K4','L4:M4','N4:O4','A5:O5'].map(XLSX.utils.decode_range);return ws}
+  ws['!rows']=rowsH;ws['!merges']=merges.map(XLSX.utils.decode_range);return ws}
 function exportReports(){
   if(!window.XLSX){toast('엑셀 모듈을 불러오지 못했습니다');return}
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,sheetVendor(S.month),'업체별');XLSX.utils.book_append_sheet(wb,sheetItem(S.month),'품목별');
