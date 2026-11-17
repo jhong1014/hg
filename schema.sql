@@ -94,7 +94,7 @@ create table if not exists hg_receipts (             -- 입고 내역 (계근 1�
   packaging         text,                            -- 'T/B' 또는 null
   tb_count          int,
   tare_kg           numeric(8,1),                    -- T/B 무게
-  net_kg            numeric(12,1) not null,          -- 수량 = 실중량
+  net_kg            numeric(12,1),                   -- 수량 = 실중량 (주원료는 계근 전이면 비워 둘 수 있음)
   unit_price        numeric(12,2),                   -- 입고 시점 단가
   supply_amount     numeric(14,0),
   vat_amount        numeric(14,0),
@@ -105,6 +105,7 @@ create table if not exists hg_receipts (             -- 입고 내역 (계근 1�
   voided_at         timestamptz,                     -- 삭제 대신 취소 표시
   check (supplier_item_id is not null or import_lot_id is not null)
 );
+alter table hg_receipts alter column net_kg drop not null;   -- 기존 DB 반영용
 create index if not exists hg_receipts_date_idx  on hg_receipts (receipt_date);
 create index if not exists hg_receipts_item_idx  on hg_receipts (supplier_item_id, receipt_date);
 create index if not exists hg_receipts_lot_idx   on hg_receipts (import_lot_id);
@@ -222,9 +223,14 @@ begin
                            from hg_price_history ph where ph.supplier_item_id = si.id)) order by m.sap_code, si.raw_name), '[]')
               from hg_supplier_items si join hg_materials m on m.id = si.material_id join hg_suppliers s on s.id = si.supplier_id
               where si.is_active),
-    'lots', (select coalesce(json_agg(json_build_object('id', l.id, 'sap', m.sap_code, 'name', m.name, 'raw', l.vessel_name,
-                  'inpo', l.inbound_po_no, 'tax', l.tax_code) order by l.id desc), '[]')
-             from hg_import_lots l join hg_materials m on m.id = l.material_id where not l.is_closed),
+    -- 모선: 이름 하나에 한 줄(입고PO는 입고 건마다 따로 저장). 최근 입고한 모선부터.
+    'lots', (select coalesce(json_agg(json_build_object('id', x.id, 'sap', x.sap_code, 'name', x.name, 'raw', x.vessel_name,
+                  'inpo', '', 'tax', x.tax_code, 'last', x.last) order by x.last desc nulls last, x.id desc), '[]')
+             from (select distinct on (l.vessel_name) l.id, l.vessel_name, l.tax_code, m.sap_code, m.name,
+                          (select max(r.receipt_date) from hg_receipts r join hg_import_lots l2 on l2.id = r.import_lot_id
+                           where l2.vessel_name = l.vessel_name and r.voided_at is null) as last
+                   from hg_import_lots l join hg_materials m on m.id = l.material_id
+                   order by l.vessel_name, (l.inbound_po_no = '') desc, l.id desc) x),
     'tx', (select coalesce(json_agg(x order by x.date, x.id), '[]') from (
              select r.id, r.receipt_date as date, r.category as cat,
                     coalesce(m.sap_code, lm.sap_code) as sap, coalesce(m.name, lm.name) as name,
@@ -265,9 +271,10 @@ begin
     returning id into v_batch;
   end if;
   for r in select * from jsonb_array_elements(p_rows) loop
-    v_date := (r->>'date')::date; v_qty := (r->>'qty')::numeric;
+    v_date := (r->>'date')::date; v_qty := nullif(r->>'qty','')::numeric;
     v_tare := nullif(r->>'tare','')::numeric; v_cnt := nullif(r->>'tbcnt','')::int;
-    if v_qty is null or v_qty <= 0 then raise exception '수량은 0보다 커야 합니다'; end if;
+    if v_qty is not null and v_qty <= 0 then raise exception '수량은 0보다 커야 합니다'; end if;
+    if v_qty is null and nullif(r->>'item_id','') is not null then raise exception '수량을 입력하세요'; end if;
     v_price := nullif(r->>'price','')::numeric;
     if nullif(r->>'item_id','') is not null then
       v_lot_id := null; v_lot_po := null;
@@ -280,13 +287,13 @@ begin
       v_item_id := null; v_cat := '주원료';
       select id, tax_code, inbound_po_no into strict v_lot_id, v_tax, v_lot_po from hg_import_lots where id = (r->>'lot_id')::bigint;
     end if;
-    v_supply := case when v_price is null then null else round(v_qty * v_price) end;
+    v_supply := case when v_price is null or v_qty is null then null else round(v_qty * v_price) end;
     insert into hg_receipts(receipt_date, supplier_item_id, import_lot_id, category, tax_code, gross_kg, packaging, tb_count, tare_kg,
                             net_kg, unit_price, supply_amount, vat_amount, purchase_order_no, inbound_po_no, import_batch_id)
     values (v_date, v_item_id, v_lot_id, v_cat, v_tax,
             nullif(r->>'gross','')::numeric, case when v_cnt is not null or coalesce(v_tare, 0) > 0 then 'T/B' end, v_cnt, v_tare,
             v_qty, v_price, v_supply, case when v_supply is null then null when v_tax = 'V1' then round(v_supply * 0.1) else 0 end,
-            nullif(r->>'po',''), coalesce(nullif(r->>'inpo',''), nullif(v_lot_po,'')), v_batch);
+            nullif(r->>'po',''), nullif(r->>'inpo',''), v_batch);   -- 입고PO는 입고 건마다 (모선에 묶지 않음)
     v_n := v_n + 1;
   end loop;
   return json_build_object('ok', true, 'n', v_n, 'batch', v_batch);
@@ -306,18 +313,40 @@ begin
     select id, category, tax_code into strict v_item, v_cat, v_tax from hg_supplier_items where id = (p_data->>'item_id')::bigint;
   end if;
   v_qty := nullif(p_data->>'qty','')::numeric;
-  if v_qty is null or v_qty <= 0 then raise exception '수량은 0보다 커야 합니다'; end if;
+  if v_qty is not null and v_qty <= 0 then raise exception '수량은 0보다 커야 합니다'; end if;
+  if v_qty is null and v_item is not null then raise exception '수량을 입력하세요'; end if;
   if nullif(p_data->>'date','') is null then raise exception '날짜가 필요합니다'; end if;
   v_price := nullif(p_data->>'price','')::numeric;
   v_tare := nullif(p_data->>'tare','')::numeric; v_cnt := nullif(p_data->>'tbcnt','')::int;
-  v_supply := case when v_price is null then null else round(v_qty * v_price) end;
+  v_supply := case when v_price is null or v_qty is null then null else round(v_qty * v_price) end;
   update hg_receipts set receipt_date = (p_data->>'date')::date, supplier_item_id = v_item, category = v_cat, tax_code = v_tax,
     gross_kg = nullif(p_data->>'gross','')::numeric,
     packaging = case when v_cnt is not null or coalesce(v_tare, 0) > 0 then 'T/B' end, tb_count = v_cnt, tare_kg = v_tare,
     net_kg = v_qty, unit_price = v_price, supply_amount = v_supply,
     vat_amount = case when v_supply is null then null when v_tax = 'V1' then round(v_supply * 0.1) else 0 end,
-    purchase_order_no = nullif(p_data->>'po',''), inbound_po_no = nullif(p_data->>'inpo','')
+    purchase_order_no = nullif(p_data->>'po',''), inbound_po_no = nullif(p_data->>'inpo',''),
+    import_lot_id = case when v_old.import_lot_id is not null and nullif(p_data->>'lot_id','') is not null
+                         then (select id from hg_import_lots where id = (p_data->>'lot_id')::bigint) else v_old.import_lot_id end
   where id = p_id;
+end $$;
+
+-- 주원료 입고 일괄 수정. p_data: {ids:[…], inpo?: '5000…'(빈 문자열 = PO 지움), lot_id?: 모선}
+-- 키가 없는 항목은 바꾸지 않습니다. 주원료(모선) 입고만 대상입니다.
+create or replace function hg_update_main_bulk(p_token uuid, p_data jsonb) returns int
+language plpgsql security definer set search_path = public as $$
+declare v_n int;
+begin
+  perform hg_auth(p_token);
+  if p_data ? 'lot_id' and not exists (select 1 from hg_import_lots where id = (p_data->>'lot_id')::bigint) then
+    raise exception '모선을 찾을 수 없습니다';
+  end if;
+  update hg_receipts set
+    inbound_po_no = case when p_data ? 'inpo' then nullif(trim(p_data->>'inpo'),'') else inbound_po_no end,
+    import_lot_id = case when p_data ? 'lot_id' then (p_data->>'lot_id')::bigint else import_lot_id end
+  where id in (select (e#>>'{}')::bigint from jsonb_array_elements(p_data->'ids') e)
+    and import_lot_id is not null and voided_at is null;
+  get diagnostics v_n = row_count;
+  return v_n;
 end $$;
 
 create or replace function hg_void_receipt(p_token uuid, p_id bigint) returns void
@@ -473,7 +502,7 @@ end $$;
 -- 화면(anon 키)에서 부를 수 있는 함수만 열어 둠. hg_auth 는 내부용.
 revoke all on function hg_auth(uuid) from public, anon, authenticated;
 grant execute on function hg_login(text), hg_logout(uuid), hg_change_pin(uuid, text, text), hg_load(uuid),
-  hg_add_receipts(uuid, jsonb, jsonb), hg_update_receipt(uuid, bigint, jsonb), hg_void_receipt(uuid, bigint), hg_revert_batch(uuid, bigint),
+  hg_add_receipts(uuid, jsonb, jsonb), hg_update_receipt(uuid, bigint, jsonb), hg_update_main_bulk(uuid, jsonb), hg_void_receipt(uuid, bigint), hg_revert_batch(uuid, bigint),
   hg_add_lot(uuid, text, text, text, text, text), hg_upsert_master(uuid, jsonb, jsonb),
   hg_save_supplier(uuid, text, jsonb), hg_delete_supplier(uuid, text), hg_set_settlement(uuid, text, text, text, date, numeric),
   hg_save_report_items(uuid, jsonb) to anon, authenticated;
