@@ -181,7 +181,7 @@ function applyData(j){
 }
 const S={onlyItem:false,onlyVendor:false,page:'dash',month:'',regTab:'gen',vendor:'',item:null,q:'',cat:'',mTab:'item',mSel:0,bTab:'rc',lot:null,loaded:false};
 const monthName=m=>'20'+m.slice(0,2)+'년 '+(+m.slice(2))+'월';
-const PAGES=[['','업무'],['dash','대시보드'],['reg','입고 등록'],['list','입고 내역'],['bulk','일괄 입력'],
+const PAGES=[['','업무'],['dash','대시보드'],['reg','입고 등록'],['list','입고 내역'],['stats','입고 통계'],['bulk','일괄 입력'],
  ['','월 마감 보고'],['vendor','업체별 구매현황'],['item','품목별 전월비'],
  ['','기준 정보'],['master','품목·거래처·단가'],['','설정'],['settings','PIN 변경 · 로그아웃']];
 function nav(){ $('#nav').innerHTML=PAGES.map(p=>p[0]===''?`<div class="grp">${p[1]}</div>`:`<button class="${S.page===p[0]?'on':''}" onclick="go('${p[0]}')">${p[1]}</button>`).join('')}
@@ -455,6 +455,55 @@ function editTx(id){const t=TX.find(x=>x.id===id);if(!t)return;
 function exportList(){const rows=listRows();if(!rows.length){toast('내보낼 내역이 없습니다');return}
   const r=lpRange();saveSheet('입고내역_'+(r?(r[0]===r[1]?r[0]:r[0]+'_'+r[1]):S.month),[['날짜','거래처코드','구분','SAP','품목','원료명','면/과세','수량','단가','거래처명','구매오더','입고PO','공급가액','부가세','총금액','T/B','T/B수량','T/B무게','계근표'],
    ...rows.map(t=>[t.date,t.v,t.cat,t.sap,t.name,t.raw,t.tax,t.qty??'',t.price??'',t.vname,t.po,t.inpo,t.price?supply(t):'',t.price?vat(t):'',t.price?total(t):'',t.tb,t.tbcnt??'',t.tare??'',t.gross??''])])}
+
+/* ---------- 입고 통계 (엑셀 피벗테이블: 업체별 × 품목 / 품목별 × 업체) ---------- */
+const ST={view:'vendor',key:'',cat:''};
+const MAINV='__main';
+const stVendor=t=>t.v||MAINV, stVname=t=>t.v?(t.vname||t.v):'주원료 (도입·모선)';
+const stItem=t=>(t.sap||'')+'|'+t.name;
+function statsData(){
+  const rows=inMonth(S.month).filter(t=>!ST.cat||t.cat===ST.cat);
+  const add=(o,t)=>{o.n++;o.q+=t.qty||0;o.s+=supply(t);o.v+=vat(t);if(t.qty==null)o.nq++};
+  const z=()=>({n:0,q:0,s:0,v:0,nq:0});
+  const g={};
+  rows.forEach(t=>{
+    const [k,label,sub,sk,slabel]=ST.view==='vendor'
+      ?[stVendor(t),stVname(t),t.v||'',t.raw+'|'+(t.sap||''),t.raw]
+      :[stItem(t),t.name,t.sap||'',stVendor(t),stVname(t)];
+    const G=g[k]=g[k]||{k,label,sub,T:z(),lines:{}};add(G.T,t);
+    const L=G.lines[sk]=G.lines[sk]||{label:slabel,sub:ST.view==='vendor'?t.name+(t.sap?' · '+t.sap:''):(t.v||''),...z()};add(L,t)});
+  const groups=Object.values(g).sort((a,b)=>b.T.s+b.T.v-(a.T.s+a.T.v)||b.T.q-a.T.q||a.label.localeCompare(b.label));
+  groups.forEach(G=>G.list=Object.values(G.lines).sort((a,b)=>b.s-a.s||b.q-a.q));
+  const shown=ST.key?groups.filter(G=>G.k===ST.key):groups, T=z();
+  shown.forEach(G=>{T.n+=G.T.n;T.q+=G.T.q;T.s+=G.T.s;T.v+=G.T.v;T.nq+=G.T.nq});
+  return {groups,shown,T,cats:[...new Set(inMonth(S.month).map(t=>t.cat))]}}
+function setST(k,v){ST[k]=v;if(k==='view'||k==='cat')ST.key='';render()}
+function stats(){
+  const R2=statsData(),V2=ST.view==='vendor';
+  const n=(o,k)=>`<td class="n">${o[k]?fmt(o[k]):'-'}</td>`;
+  const cells=o=>`<td class="n">${fmt(o.n)}</td><td class="n">${fmt(o.q)}${o.nq?` <span class="tag w">${o.nq}건 미입력</span>`:''}</td>${n(o,'s')}${n(o,'v')}<td class="n">${o.s+o.v?fmt(o.s+o.v):'-'}</td>`;
+  const body=R2.shown.map(G=>`<tr style="background:var(--brand-soft)"><td colspan="2"><b>${esc(G.label)}</b> <span class="mut" style="font-size:12px">${esc(G.sub)}</span></td>${cells(G.T).replace(/<td class="n">/g,'<td class="n" style="font-weight:700">')}</tr>
+    ${G.list.map(L=>`<tr><td style="padding-left:26px">${esc(L.label)}</td><td class="mut" style="font-size:12.5px">${esc(L.sub)}</td>${cells(L)}</tr>`).join('')}`).join('')
+    ||'<tr><td colspan="7" class="mut">이 달에 입고 내역이 없습니다</td></tr>';
+  const opts=R2.groups.map(G=>`<option value="${esc(G.k)}" ${G.k===ST.key?'selected':''}>${esc(G.label)}${G.sub&&!V2?' ('+esc(G.sub)+')':''}</option>`).join('');
+  return head('입고 통계',`${monthName(S.month)} · ${V2?'업체별 품목 합계':'품목별 업체 합계'} (엑셀 피벗테이블과 같은 집계)`,
+    monthSel()+`<div class="tabs" style="margin:0;border:0"><button class="${V2?'on':''}" onclick="setST('view','vendor')">업체별</button><button class="${!V2?'on':''}" onclick="setST('view','item')">품목별</button></div>
+    <select onchange="setST('key',this.value)"><option value="">${V2?'업체 전체':'품목 전체'} (${R2.groups.length})</option>${opts}</select>
+    <select onchange="setST('cat',this.value)"><option value="">구분 전체</option>${R2.cats.map(c=>`<option ${c===ST.cat?'selected':''}>${c}</option>`).join('')}</select>
+    <button class="btn" onclick="exportStats()">엑셀 내보내기</button>`)+
+  `<div class="kpis" style="margin-bottom:14px">
+    <div class="card kpi"><div class="l">${V2?'업체 수':'품목 수'}</div><div class="v">${fmt(R2.shown.length)}<small>${V2?'곳':'개'}</small></div><div class="d">${ST.cat?esc(ST.cat):'구분 전체'}</div></div>
+    <div class="card kpi"><div class="l">수량 합계</div><div class="v">${fmt(R2.T.q)}<small>kg</small></div><div class="d">${fmt(R2.T.n)}건${R2.T.nq?` · 수량 미입력 ${R2.T.nq}건`:''}</div></div>
+    <div class="card kpi"><div class="l">공급가액 합계</div><div class="v">${fmt(R2.T.s)}<small>원</small></div><div class="d">부가세 ${fmt(R2.T.v)}</div></div>
+    <div class="card kpi"><div class="l">합계 (공급가액+부가세)</div><div class="v">${fmt(R2.T.s+R2.T.v)}<small>원</small></div><div class="d">${monthName(S.month)}</div></div></div>
+  <div class="card"><div class="scroll" style="max-height:none"><table><thead><tr><th>${V2?'업체 / 원료명':'품목 / 업체명'}</th><th>${V2?'품목명':'거래처코드'}</th><th class="n">건수</th><th class="n">수량 합계(kg)</th><th class="n">공급가액 합계</th><th class="n">부가세 합계</th><th class="n">합계</th></tr></thead>
+   <tbody>${body}</tbody><tfoot><tr><td colspan="2">총합계</td>${cells(R2.T)}</tr></tfoot></table></div></div>`;
+}
+function exportStats(){const R2=statsData(),V2=ST.view==='vendor';if(!R2.shown.length){toast('내보낼 내역이 없습니다');return}
+  const aoa=[[V2?'업체':'품목',V2?'원료명':'업체명',V2?'품목명':'거래처코드','건수','수량 합계(kg)','공급가액 합계','부가세 합계','합계']];
+  R2.shown.forEach(G=>{G.list.forEach(L=>aoa.push([G.label,L.label,L.sub,L.n,L.q,L.s,L.v,L.s+L.v]));aoa.push([G.label+' 요약','','',G.T.n,G.T.q,G.T.s,G.T.v,G.T.s+G.T.v])});
+  aoa.push(['총합계','','',R2.T.n,R2.T.q,R2.T.s,R2.T.v,R2.T.s+R2.T.v]);
+  saveSheet(`입고통계_${V2?'업체별':'품목별'}_${S.month}`,aoa);toast('엑셀 파일을 내려받았습니다')}
 
 /* ---------- 업체별 (원본 엑셀 「업체별」 시트 양식) ---------- */
 const mmOf=m=>m.slice(2)+'월';
@@ -792,7 +841,7 @@ function bulk(){
   return head('일괄 입력','양식에 맞춰 넣으면 검증을 거쳐 한 번에 등록합니다. 오류가 있는 행은 이유와 함께 표시됩니다.')+tabs+`<div class="grid2" style="grid-template-columns:1fr 1fr;align-items:start">${step1}${step2}</div>${step3}${hist}`;
 }
 
-const R={dash,reg,list,bulk,vendor,item,master,settings};
+const R={dash,reg,list,stats,bulk,vendor,item,master,settings};
 function render(){nav();
   const warn=IS_DEFAULT&&S.page!=='settings'?`<div class="note pinwarn" style="display:flex;justify-content:space-between;align-items:center;gap:10px">초기 PIN(1234)을 사용 중입니다. 다른 번호로 바꿔 주세요.<button class="btn sm" onclick="go('settings')">PIN 변경</button></div>`:'';
   $('#main').innerHTML=warn+R[S.page]()}
