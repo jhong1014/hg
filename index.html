@@ -457,7 +457,7 @@ function exportList(){const rows=listRows();if(!rows.length){toast('내보낼 �
    ...rows.map(t=>[t.date,t.v,t.cat,t.sap,t.name,t.raw,t.tax,t.qty??'',t.price??'',t.vname,t.po,t.inpo,t.price?supply(t):'',t.price?vat(t):'',t.price?total(t):'',t.tb,t.tbcnt??'',t.tare??'',t.gross??''])])}
 
 /* ---------- 입고 통계 (엑셀 피벗테이블: 업체별 × 품목 / 품목별 × 업체) ---------- */
-const ST={view:'vendor',key:'',cat:''};
+const ST={view:'vendor',key:'',cat:'',open:false};
 const MAINV='__main';
 const stVendor=t=>t.v||MAINV, stVname=t=>t.v?(t.vname||t.v):'주원료 (도입·모선)';
 const stItem=t=>(t.sap||'')+'|'+t.name;
@@ -469,7 +469,8 @@ function lastPrice(v,raw,sap){if(!v)return null;
   const t=TX.filter(x=>x.v===v&&x.raw===raw&&x.price).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id)[0];
   return t?{p:t.price,from:t.date,src:'최근 입고'}:null}
 function statsData(){
-  const rows=inMonth(S.month).filter(t=>!ST.cat||t.cat===ST.cat);
+  const all=inMonth(S.month).filter(t=>!ST.cat||t.cat===ST.cat);
+  const rows=ST.open?all.filter(t=>!(t.v&&isClosed(t.v))):all;   // 정산 안 된 자료만
   const add=(o,t)=>{o.n++;o.q+=t.qty||0;o.s+=supply(t);o.v+=vat(t);if(t.qty==null)o.nq++};
   const z=()=>({n:0,q:0,s:0,v:0,nq:0});
   const g={};
@@ -483,9 +484,9 @@ function statsData(){
   groups.forEach(G=>{G.list=Object.values(G.lines).sort((a,b)=>b.s-a.s||b.q-a.q);G.list.forEach(L=>L.lp=lastPrice(L.vc,L.raw,L.sap))});
   const shown=ST.key?groups.filter(G=>G.k===ST.key):groups, T=z();
   shown.forEach(G=>{T.n+=G.T.n;T.q+=G.T.q;T.s+=G.T.s;T.v+=G.T.v;T.nq+=G.T.nq});
-  const vcs=[...new Set(rows.filter(t=>t.v).map(t=>t.v))];
+  const vcs=[...new Set(all.filter(t=>t.v).map(t=>t.v))];
   return {groups,shown,T,cats:[...new Set(inMonth(S.month).map(t=>t.cat))],nV:vcs.length,nClosed:vcs.filter(c=>isClosed(c)).length}}
-function setST(k,v){ST[k]=v;if(k==='view'||k==='cat')ST.key='';render()}
+function setST(k,v){ST[k]=v;if(k==='view'||k==='cat'||k==='open')ST.key='';render()}
 async function toggleClosed(code,on){const k=S.month+'|'+code,old=SETTLE[k];
   SETTLE[k]={...(old||{ym:S.month,v:code}),closed:on};render();
   try{await api('hg_set_closed',{p_ym:S.month,p_code:code,p_closed:on});toast(on?'정산 완료로 표시했습니다':'정산 완료를 해제했습니다')}
@@ -507,7 +508,9 @@ function stats(){
     monthSel()+`<div class="tabs" style="margin:0;border:0"><button class="${V2?'on':''}" onclick="setST('view','vendor')">업체별</button><button class="${!V2?'on':''}" onclick="setST('view','item')">품목별</button></div>
     <select onchange="setST('key',this.value)"><option value="">${V2?'업체 전체':'품목 전체'} (${R2.groups.length})</option>${opts}</select>
     <select onchange="setST('cat',this.value)"><option value="">구분 전체</option>${R2.cats.map(c=>`<option ${c===ST.cat?'selected':''}>${c}</option>`).join('')}</select>
+    <label style="display:flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap"><input type="checkbox" ${ST.open?'checked':''} onchange="setST('open',this.checked)">정산 안 된 자료만</label>
     <button class="btn" onclick="exportStats()">엑셀 내보내기</button>`)+
+  (ST.open?`<div class="note">정산 완료로 체크한 업체 ${R2.nClosed}곳을 숨겼습니다. 합계와 엑셀 내보내기도 남은 자료 기준입니다.${ST.view==='vendor'?'':' 품목별 보기에서는 정산 완료 업체의 줄만 빠집니다.'}</div>`:'')+
   `<div class="kpis" style="margin-bottom:14px">
     <div class="card kpi"><div class="l">월 정산 완료</div><div class="v">${R2.nClosed}<small>/ ${R2.nV}곳</small></div><div class="d">${V2?'업체 이름 앞 체크박스로 표시':'「업체별」 탭에서 체크'}</div></div>
     <div class="card kpi"><div class="l">수량 합계</div><div class="v">${fmt(R2.T.q)}<small>kg</small></div><div class="d">${fmt(R2.T.n)}건${R2.T.nq?` · 수량 미입력 ${R2.T.nq}건`:''}</div></div>
@@ -522,7 +525,7 @@ function exportStats(){const R2=statsData(),V2=ST.view==='vendor';if(!R2.shown.l
   const done=c=>c&&isClosed(c)?'완료':'';
   R2.shown.forEach(G=>{G.list.forEach(L=>aoa.push([G.label,L.label,L.sub,L.n,L.q,L.lp?L.lp.p:'',L.s,L.v,L.s+L.v,done(L.vc)]));aoa.push([G.label+' 요약','','',G.T.n,G.T.q,'',G.T.s,G.T.v,G.T.s+G.T.v,V2?done(G.vc):''])});
   aoa.push(['총합계','','',R2.T.n,R2.T.q,'',R2.T.s,R2.T.v,R2.T.s+R2.T.v,'']);
-  saveSheet(`입고통계_${V2?'업체별':'품목별'}_${S.month}`,aoa);toast('엑셀 파일을 내려받았습니다')}
+  saveSheet(`입고통계_${V2?'업체별':'품목별'}${ST.open?'_미정산':''}_${S.month}`,aoa);toast('엑셀 파일을 내려받았습니다')}
 
 /* ---------- 업체별 (원본 엑셀 「업체별」 시트 양식) ---------- */
 const mmOf=m=>m.slice(2)+'월';
