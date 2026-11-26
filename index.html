@@ -462,6 +462,11 @@ const MAINV='__main';
 const stVendor=t=>t.v||MAINV, stVname=t=>t.v?(t.vname||t.v):'주원료 (도입·모선)';
 const stItem=t=>(t.sap||'')+'|'+t.name;
 const isClosed=(code,m)=>!!(SETTLE[(m||S.month)+'|'+code]||{}).closed;
+const invDate=(code,m)=>(SETTLE[(m||S.month)+'|'+code]||{}).inv||'';
+async function setInvDate(code,d){const k=S.month+'|'+code,old=SETTLE[k];
+  SETTLE[k]={...(old||{ym:S.month,v:code}),inv:d||null};render();
+  try{await api('hg_set_invoice_date',{p_ym:S.month,p_code:code,p_date:d||null});toast(d?'세금계산서 입력일을 저장했습니다':'세금계산서 입력일을 지웠습니다')}
+  catch(e){if(old)SETTLE[k]=old;else delete SETTLE[k];render();if(!e.auth)toast(e.message)}}
 // 최근 단가: 기초자료(거래처·원료명) 단가 이력의 마지막 값, 없으면 그 거래처·원료의 가장 최근 입고 단가
 function lastPrice(v,raw,sap){if(!v)return null;
   const c=D.items.filter(i=>i.v===v&&i.raw===raw),it=c.find(i=>i.sap===sap)||c[0];
@@ -485,7 +490,7 @@ function statsData(){
   const shown=ST.key?groups.filter(G=>G.k===ST.key):groups, T=z();
   shown.forEach(G=>{T.n+=G.T.n;T.q+=G.T.q;T.s+=G.T.s;T.v+=G.T.v;T.nq+=G.T.nq});
   const vcs=[...new Set(all.filter(t=>t.v).map(t=>t.v))];
-  return {groups,shown,T,cats:[...new Set(inMonth(S.month).map(t=>t.cat))],nV:vcs.length,nClosed:vcs.filter(c=>isClosed(c)).length}}
+  return {groups,shown,T,cats:[...new Set(inMonth(S.month).map(t=>t.cat))],nV:vcs.length,nClosed:vcs.filter(c=>isClosed(c)).length,nInv:vcs.filter(c=>invDate(c)).length}}
 function setST(k,v){ST[k]=v;if(k==='view'||k==='cat'||k==='open')ST.key='';render()}
 async function toggleClosed(code,on){const k=S.month+'|'+code,old=SETTLE[k];
   SETTLE[k]={...(old||{ym:S.month,v:code}),closed:on};render();
@@ -500,9 +505,9 @@ function stats(){
   const doneTag='<span class="tag" style="background:#3b5b8c;color:#fff">정산 완료</span>';
   const body=R2.shown.map(G=>{const gc=V2&&G.vc&&isClosed(G.vc);
     const chk=V2?(G.vc?`<input type="checkbox" aria-label="${esc(G.label)} 정산 완료" title="월 정산 완료" style="width:16px;height:16px;vertical-align:-3px;margin-right:8px" ${gc?'checked':''} onchange="toggleClosed('${esc(G.vc)}',this.checked)">`:'<span style="display:inline-block;width:24px"></span>'):'';
-    return `<tr style="background:${gc?CLH:'var(--brand-soft)'}"><td colspan="2">${chk}<b>${esc(G.label)}</b> <span class="mut" style="font-size:12px">${esc(G.sub)}</span> ${gc?doneTag:''}</td>${cells(G.T).replace(/<td class="n">/g,'<td class="n" style="font-weight:700">')}</tr>
-    ${G.list.map(L=>{const lc=gc||(!V2&&L.vc&&isClosed(L.vc));return `<tr style="${lc?'background:'+CL:''}"><td style="padding-left:${V2?50:26}px">${esc(L.label)}${!V2&&lc?' '+doneTag:''}</td><td class="mut" style="font-size:12.5px">${esc(L.sub)}</td>${cells(L,lpCell(L))}</tr>`}).join('')}`}).join('')
-    ||'<tr><td colspan="8" class="mut">이 달에 입고 내역이 없습니다</td></tr>';
+    return `<tr style="background:${gc?CLH:'var(--brand-soft)'}"><td colspan="2">${chk}<b>${esc(G.label)}</b> <span class="mut" style="font-size:12px">${esc(G.sub)}</span> ${gc?doneTag:''}</td>${cells(G.T).replace(/<td class="n">/g,'<td class="n" style="font-weight:700">')}<td>${V2&&G.vc?`<input type="date" aria-label="${esc(G.label)} 세금계산서 입력일" style="padding:3px 6px;font-size:12.5px" value="${invDate(G.vc)}" onchange="setInvDate('${esc(G.vc)}',this.value)">`:''}</td></tr>
+    ${G.list.map(L=>{const lc=gc||(!V2&&L.vc&&isClosed(L.vc));return `<tr style="${lc?'background:'+CL:''}"><td style="padding-left:${V2?50:26}px">${esc(L.label)}${!V2&&lc?' '+doneTag:''}</td><td class="mut" style="font-size:12.5px">${esc(L.sub)}</td>${cells(L,lpCell(L))}<td style="font-size:12.5px">${!V2&&L.vc?esc(invDate(L.vc)):''}</td></tr>`}).join('')}`}).join('')
+    ||'<tr><td colspan="9" class="mut">이 달에 입고 내역이 없습니다</td></tr>';
   const opts=R2.groups.map(G=>`<option value="${esc(G.k)}" ${G.k===ST.key?'selected':''}>${esc(G.label)}${G.sub&&!V2?' ('+esc(G.sub)+')':''}</option>`).join('');
   return head('입고 통계',`${monthName(S.month)} · ${V2?'업체별 품목 합계':'품목별 업체 합계'} (엑셀 피벗테이블과 같은 집계)`,
     monthSel()+`<div class="tabs" style="margin:0;border:0"><button class="${V2?'on':''}" onclick="setST('view','vendor')">업체별</button><button class="${!V2?'on':''}" onclick="setST('view','item')">품목별</button></div>
@@ -517,14 +522,14 @@ function stats(){
     <div class="card kpi"><div class="l">공급가액 합계</div><div class="v">${fmt(R2.T.s)}<small>원</small></div><div class="d">부가세 ${fmt(R2.T.v)}</div></div>
     <div class="card kpi"><div class="l">합계 (공급가액+부가세)</div><div class="v">${fmt(R2.T.s+R2.T.v)}<small>원</small></div><div class="d">${monthName(S.month)}</div></div></div>
   <div class="mut" style="font-size:12.5px;margin:0 0 8px">단가는 해당 거래처·원료의 <b>최근 단가</b>입니다 (기초자료 단가 이력의 마지막 값, 없으면 가장 최근 입고 단가). 숫자에 마우스를 올리면 적용일이 보입니다. <span style="display:inline-block;width:12px;height:12px;background:${CLH};border-radius:3px;vertical-align:-1px"></span> 정산 완료 업체</div>
-  <div class="card"><div class="scroll" style="max-height:none"><table><thead><tr><th>${V2?'업체 / 원료명':'품목 / 업체명'}</th><th>${V2?'품목명':'거래처코드'}</th><th class="n">건수</th><th class="n">수량 합계(kg)</th><th class="n">최근 단가</th><th class="n">공급가액 합계</th><th class="n">부가세 합계</th><th class="n">합계</th></tr></thead>
-   <tbody>${body}</tbody><tfoot><tr><td colspan="2">총합계</td>${cells(R2.T)}</tr></tfoot></table></div></div>`;
+  <div class="card"><div class="scroll" style="max-height:none"><table><thead><tr><th>${V2?'업체 / 원료명':'품목 / 업체명'}</th><th>${V2?'품목명':'거래처코드'}</th><th class="n">건수</th><th class="n">수량 합계(kg)</th><th class="n">최근 단가</th><th class="n">공급가액 합계</th><th class="n">부가세 합계</th><th class="n">합계</th><th>세금계산서 입력일</th></tr></thead>
+   <tbody>${body}</tbody><tfoot><tr><td colspan="2">총합계</td>${cells(R2.T)}<td>${R2.nInv} / ${R2.nV}곳 입력</td></tr></tfoot></table></div></div>`;
 }
 function exportStats(){const R2=statsData(),V2=ST.view==='vendor';if(!R2.shown.length){toast('내보낼 내역이 없습니다');return}
-  const aoa=[[V2?'업체':'품목',V2?'원료명':'업체명',V2?'품목명':'거래처코드','건수','수량 합계(kg)','최근 단가','공급가액 합계','부가세 합계','합계','정산 완료']];
+  const aoa=[[V2?'업체':'품목',V2?'원료명':'업체명',V2?'품목명':'거래처코드','건수','수량 합계(kg)','최근 단가','공급가액 합계','부가세 합계','합계','정산 완료','세금계산서 입력일']];
   const done=c=>c&&isClosed(c)?'완료':'';
-  R2.shown.forEach(G=>{G.list.forEach(L=>aoa.push([G.label,L.label,L.sub,L.n,L.q,L.lp?L.lp.p:'',L.s,L.v,L.s+L.v,done(L.vc)]));aoa.push([G.label+' 요약','','',G.T.n,G.T.q,'',G.T.s,G.T.v,G.T.s+G.T.v,V2?done(G.vc):''])});
-  aoa.push(['총합계','','',R2.T.n,R2.T.q,'',R2.T.s,R2.T.v,R2.T.s+R2.T.v,'']);
+  R2.shown.forEach(G=>{G.list.forEach(L=>aoa.push([G.label,L.label,L.sub,L.n,L.q,L.lp?L.lp.p:'',L.s,L.v,L.s+L.v,done(L.vc),L.vc?invDate(L.vc):'']));aoa.push([G.label+' 요약','','',G.T.n,G.T.q,'',G.T.s,G.T.v,G.T.s+G.T.v,V2?done(G.vc):'',V2&&G.vc?invDate(G.vc):''])});
+  aoa.push(['총합계','','',R2.T.n,R2.T.q,'',R2.T.s,R2.T.v,R2.T.s+R2.T.v,'','']);
   saveSheet(`입고통계_${V2?'업체별':'품목별'}${ST.open?'_미정산':''}_${S.month}`,aoa);toast('엑셀 파일을 내려받았습니다')}
 
 /* ---------- 업체별 (원본 엑셀 「업체별」 시트 양식) ---------- */

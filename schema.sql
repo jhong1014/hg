@@ -124,6 +124,7 @@ create table if not exists hg_settlements (          -- 월 지급 (전표NO, �
   primary key (yyyymm, supplier_id)
 );
 alter table hg_settlements add column if not exists closed boolean not null default false;   -- 기존 DB 반영용
+alter table hg_settlements add column if not exists invoice_date date;                         -- 입고 통계: 세금계산서 입력일
 
 create table if not exists hg_report_items (         -- 품목별 보고서 양식 (행 순서·품명·거래처 표기)
   id           bigserial primary key,
@@ -251,7 +252,7 @@ begin
     'batches', (select coalesce(json_agg(json_build_object('id', id, 'type', target, 'src', file_name, 'at', created_at,
                   'n', ok_rows, 'skip', skipped_rows) order by id desc), '[]')
                 from (select * from hg_import_batches where reverted_at is null order by id desc limit 20) b),
-    'settle', (select coalesce(json_agg(json_build_object('ym', st.yyyymm, 'v', s.code, 'voucher', st.voucher_no, 'due', st.due_date, 'amount', st.amount, 'closed', st.closed)), '[]')
+    'settle', (select coalesce(json_agg(json_build_object('ym', st.yyyymm, 'v', s.code, 'voucher', st.voucher_no, 'due', st.due_date, 'amount', st.amount, 'closed', st.closed, 'inv', st.invoice_date)), '[]')
                from hg_settlements st join hg_suppliers s on s.id = st.supplier_id),
     'ritems', (select coalesce(json_agg(json_build_object('sap', sap_code, 'label', label, 'vlabel', vendor_label) order by sort_order, id), '[]') from hg_report_items)
   ) into v;
@@ -497,6 +498,17 @@ begin
   on conflict (yyyymm, supplier_id) do update set closed = excluded.closed;
 end $$;
 
+-- 입고 통계: 업체의 월 세금계산서 입력일 (null = 지움, 다른 정산 항목은 그대로)
+create or replace function hg_set_invoice_date(p_token uuid, p_ym text, p_code text, p_date date) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_sup bigint;
+begin
+  perform hg_auth(p_token);
+  select id into strict v_sup from hg_suppliers where code = p_code;
+  insert into hg_settlements(yyyymm, supplier_id, invoice_date) values (p_ym, v_sup, p_date)
+  on conflict (yyyymm, supplier_id) do update set invoice_date = excluded.invoice_date;
+end $$;
+
 -- 품목별 보고서 양식 전체 교체. p_rows: [{sap, label, vlabel}] (배열 순서 = 보고서 순서)
 create or replace function hg_save_report_items(p_token uuid, p_rows jsonb) returns int
 language plpgsql security definer set search_path = public as $$
@@ -517,5 +529,5 @@ revoke all on function hg_auth(uuid) from public, anon, authenticated;
 grant execute on function hg_login(text), hg_logout(uuid), hg_change_pin(uuid, text, text), hg_load(uuid),
   hg_add_receipts(uuid, jsonb, jsonb), hg_update_receipt(uuid, bigint, jsonb), hg_update_main_bulk(uuid, jsonb), hg_void_receipt(uuid, bigint), hg_revert_batch(uuid, bigint),
   hg_add_lot(uuid, text, text, text, text, text), hg_upsert_master(uuid, jsonb, jsonb),
-  hg_save_supplier(uuid, text, jsonb), hg_delete_supplier(uuid, text), hg_set_settlement(uuid, text, text, text, date, numeric), hg_set_closed(uuid, text, text, boolean),
+  hg_save_supplier(uuid, text, jsonb), hg_delete_supplier(uuid, text), hg_set_settlement(uuid, text, text, text, date, numeric), hg_set_closed(uuid, text, text, boolean), hg_set_invoice_date(uuid, text, text, date),
   hg_save_report_items(uuid, jsonb) to anon, authenticated;
